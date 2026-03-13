@@ -106,7 +106,7 @@ class DropCanvas(QFrame):
 class ReferenceVaul(QMainWindow):
     def __init__(self):
         super().__init__()
-        
+        self.current_folder_path = None #track the currently loaded folder path to avoid reloading if the same folder is clicked again
         #main window
         self.setWindowTitle("Reference Vault")
         self.resize(1000,700)
@@ -150,8 +150,9 @@ class ReferenceVaul(QMainWindow):
         #when a folder is added, automatically load it in the canvas and switch to canvas view
         if self.folder_list.count()==1:
           
-            #select and load first folder
+            #select and load first folder and update the tracker
             self.folder_list.setCurrentItem(item)
+            self.current_folder_path = full_path
             self.canvas.load_images_from_path(full_path)
            
    
@@ -159,6 +160,8 @@ class ReferenceVaul(QMainWindow):
     #when a folder is clicked in the sidebar, load its images in the canvas
     def on_sidebar_folder_clicked(self, item):
         folder_path = item.data(Qt.ItemDataRole.UserRole) #get full path from item data
+        if folder_path != self.current_folder_path: #only reload if different folder is clicked
+            self.current_folder_path = folder_path
         self.canvas.load_images_from_path(folder_path)
        
 
