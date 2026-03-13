@@ -48,19 +48,34 @@ class ReferenceGrid(QListWidget):
             items=self.selectedItems()
             if not items:
                 return
+            
             drag=QDrag(self)
             mime_data=QMimeData()
             urls=[]
+            
             for item in items:
                 full_path=item.data(Qt.ItemDataRole.UserRole)
                 if full_path:
-                    urls.append(QUrl.fromLocalFile(full_path))    
-            
+                    #clean up the path for Windows by replacing backslashes with forward slashes and removing the drive letter if present, to ensure compatibility with other applications that may not handle Windows paths correctly
+                    clean_path = os.path.normpath(os.path.abspath(full_path))
+                    urls.append(QUrl.fromLocalFile(clean_path))    
+                    
+            #set the urls in the mime data so that when dragging to other applications, they receive the file paths in a standard format they can understand and handle as file drops. This allows dragging to apps like Photoshop, image viewers, or file explorers that support file drops.
             mime_data.setUrls(urls)
+            #also set the text representation of the paths in the mime data for applications that may use it instead of urls. Join multiple paths with newlines to allow dragging multiple files as text.
+            paths = "\n".join(url.toLocalFile() for url in urls)
+            mime_data.setText(paths)
+            
             drag.setMimeData(mime_data)
+            
+            #if the item has an icon, use it as the drag pixmap for better visual feedback when dragging, otherwise it will use a default blank pixmap which is less intuitive
             if items[0].icon() and not items[0].icon().isNull():
                 drag.setPixmap(items[0].icon().pixmap(QSize(100,100)))
-            drag.exec(Qt.DropAction.CopyAction)
+            
+            #tell os copy move and link are supported but copy is preferred.This allows dragging to applications that only support copy, while still allowing move/link in apps that support it if the user holds modifier keys (like Ctrl for copy or Shift for move) during the drag.
+            allowed_actions = Qt.DropAction.CopyAction | Qt.DropAction.MoveAction | Qt.DropAction.LinkAction
+                
+            drag.exec(allowed_actions,Qt.DropAction.CopyAction)
             
 
 #this class handles the drag and drop of folders onto the canvas and displays the image grid. It emits a signal when a folder is dropped so the main window can add it to the sidebar. It also has a method to load images from a given folder path and display them as thumbnails in the grid.
@@ -91,7 +106,7 @@ class DropCanvas(QFrame):
         
         
         #thumbnail grid
-        self.grid = QListWidget()
+        self.grid = ReferenceGrid()
         self.grid.setViewMode(QListWidget.ViewMode.IconMode)
         self.grid.setIconSize(QtCore.QSize(150, 150))
         self.grid.setResizeMode(QListWidget.ResizeMode.Adjust)
@@ -137,7 +152,7 @@ class DropCanvas(QFrame):
         self.grid.clear()
         #if a loader thread is already running, terminate it before starting a new one to prevent multiple threads running at the same time if user quickly loads different folders
         if self.loader_thread and self.loader_thread.isRunning():
-            self.loader_thread.terminate()
+            self.loader_thread.requestInterruption()
 
         #Start the background worker
         self.loader_thread = ImageLoaderThread(folder_path, self.valid_extensions)
