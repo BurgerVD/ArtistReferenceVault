@@ -6,6 +6,19 @@ from PyQt6.QtWidgets import QApplication, QListWidget,QMainWindow,QLabel, QStack
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QPixmap,QIcon
 
+#custom QListWidget to display image thumbnails in a grid and allow dragging them onto other applications
+class ReferenceGrid(QListWidget):
+        def __init__(self):
+            super().__init__()
+            self.setViewMode(QListWidget.ViewMode.IconMode)
+            self.setIconSize(QtCore.QSize(150, 150))
+            self.setResizeMode(QListWidget.ResizeMode.Adjust)
+            self.setSpacing(10)
+            self.setMovement(QListWidget.Movement.Static)
+            self.setStyleSheet("QListWidget { border: none; background-color: transparent; }")
+            self.setDragEnabled(True)
+            self.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
+
 #drag and drop images onto the canvas to add them to the vault
 class DropCanvas(QFrame):
     
