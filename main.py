@@ -1,6 +1,6 @@
 import sys
 from PyQt6.QtWidgets import QApplication
-from window import ReferenceVaul
+from window import ReferenceVault
 
 
 
@@ -8,6 +8,6 @@ from window import ReferenceVaul
 if __name__ == "__main__":
     #loop to run the application
     app = QApplication(sys.argv)
-    window = ReferenceVaul()
+    window = ReferenceVault()
     window.show()
     sys.exit(app.exec())        

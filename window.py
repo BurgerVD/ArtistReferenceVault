@@ -2,11 +2,12 @@
 from PyQt6.QtWidgets import QFrame, QHBoxLayout, QListWidgetItem, QMainWindow,QVBoxLayout,QStackedWidget,QLabel,QListWidget, QWidget
 from PyQt6.QtCore import Qt
 from canvas import DropCanvas
-
+from database import DatabaseManager
 #this class is the main window of the application. It contains the sidebar and the canvas. It listens for signals from the canvas when a folder is dropped and adds it to the sidebar. It also handles clicks on the sidebar to load the corresponding images in the canvas.
-class ReferenceVaul(QMainWindow):
+class ReferenceVault(QMainWindow):
     def __init__(self):
         super().__init__()
+        self.db = DatabaseManager() #initialize the database manager
         self.current_folder_path = None #track the currently loaded folder path to avoid reloading if the same folder is clicked again
         #main window
         self.setWindowTitle("Reference Vault")
@@ -41,8 +42,26 @@ class ReferenceVaul(QMainWindow):
         main_layout.addWidget(self.sidebar)
         main_layout.addWidget(self.canvas) 
     
+        #load folders from database and add to sidebar on startup
+        self.load_saved_folders()
+        
+    def load_saved_folders(self):
+        saved_folders = self.db.get_folders()
+        for name, path in saved_folders:
+            item = QListWidgetItem(name)
+            item.setData(Qt.ItemDataRole.UserRole, path) #store full path in item data
+            self.folder_list.addItem(item) 
+        #if there are saved folders, automatically load the first one in the canvas and update the tracker
+        if saved_folders:
+            first_item = self.folder_list.item(0)
+            self.folder_list.setCurrentItem(first_item)
+            self.current_folder_path = first_item.data(Qt.ItemDataRole.UserRole) # type: ignore
+            self.canvas.load_images_from_path(self.current_folder_path)
+    
     #add folder to sidebar when dropped and store full path in item data for later use
     def add_folder_to_sidebar(self, folder_name, full_path):
+        self.db.add_folder(folder_name, full_path) #save to database
+        
         item = QListWidgetItem(folder_name)
         #store the full path in the item data for later use when clicked
         item.setData(Qt.ItemDataRole.UserRole, full_path) 
