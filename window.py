@@ -1,13 +1,21 @@
+
+import os
+from pathlib import Path
+
 #controller for the main canvas area where images are displayed. It also handles drag and drop of folders to add them to the vault.
-from PyQt6.QtWidgets import QFrame,QMenu, QHBoxLayout, QListWidgetItem, QMainWindow,QVBoxLayout,QStackedWidget,QLabel,QListWidget, QWidget
+from PyQt6.QtWidgets import QInputDialog,QFrame,QMenu, QHBoxLayout, QListWidgetItem, QMainWindow,QVBoxLayout,QStackedWidget,QLabel,QListWidget, QWidget
 from PyQt6.QtCore import Qt
 from canvas import DropCanvas
 from database import DatabaseManager
 from PyQt6.QtGui import QContextMenuEvent, QMouseEvent
+
 #this class is the main window of the application. It contains the sidebar and the canvas. It listens for signals from the canvas when a folder is dropped and adds it to the sidebar. It also handles clicks on the sidebar to load the corresponding images in the canvas.
 class ReferenceVault(QMainWindow):
     def __init__(self):
         super().__init__()
+        
+        self.master_vault_path = self.setup_master_vault()
+        
         self.db = DatabaseManager() #initialize the database manager
         self.current_folder_path = None #track the currently loaded folder path to avoid reloading if the same folder is clicked again
         #main window
@@ -59,20 +67,56 @@ class ReferenceVault(QMainWindow):
     
         #load folders from database and add to sidebar on startup
         self.load_saved_folders()
+    
+    
+    
+    
+    #create master reference library folder in documents
+    def setup_master_vault(self):
+        home_dir = str(Path.home())
+        vault_path = os.path.join(home_dir,"Documents","ReferenceVault_Library")
+        os.makedirs(vault_path,exist_ok=True)
+        return vault_path
+    
+    #create folder
+    def create_custom_folder(self):
+        folder_name, ok= QInputDialog.getText(self,"New Vault Folder","Enter folder name:")
+        
+        if ok and folder_name.strip():
+            folder_name= folder_name.strip()
+            #build path
+            new_path = os.path.join(self.master_vault_path,folder_name)
+            os.makedirs(new_path,exist_ok=True)
+            #add to db and sidebar visually
+            self.add_folder_to_sidebar(folder_name,new_path)
+            print(f"Created custom vault folder: {new_path}")
+        
      
     def contextMenuEvent(self,event:QContextMenuEvent): # type: ignore
         pos = self.folder_list.viewport().mapFromGlobal(event.globalPos()) #type: ignore
         item = self.folder_list.itemAt(pos)
-        if item is None:return
         
-        self.folder_list.setCurrentItem(item) #select the item that was right-clicked
         menu = QMenu(self)
-        menu.setStyleSheet("background-color: #34495e; color: white; padding:5px;")
-        delete_action = menu.addAction("Delete Folder")
+        menu.setStyleSheet("background-color: #34495e;color:white;padding:5px;")
+        
+        #always allow creating a new folder
+        add_action = menu.addAction("+ New Folder") 
+        menu.addSeparator() #type:ignore
+        
+        #show delete if right click on folder
+        delete_action=None
+        if item is not None:
+            self.folder_list.setCurrentItem(item) #select the item that was right-clicked
+        
+            delete_action = menu.addAction("Delete Folder")
+        
+        
         action = menu.exec(event.globalPos())
         
-        if action == delete_action:
-         self.remove_folder(item)
+        if action == add_action:
+            self.create_custom_folder()
+        elif delete_action and action== delete_action:
+            self.remove_folder(item)    
         
     
     

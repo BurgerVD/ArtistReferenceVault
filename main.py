@@ -4,7 +4,7 @@ from window import ReferenceVault
 
 
 
-#entry point of the application. It creates the main window and starts the event loop.
+#entry point of the application
 if __name__ == "__main__":
     #loop to run the application
     app = QApplication(sys.argv)

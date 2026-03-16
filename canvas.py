@@ -3,9 +3,9 @@ import shutil #copy local files
 import urllib.request #download web files
 import uuid #generate unique filename for web images
 from PyQt6 import QtCore
-from PyQt6.QtWidgets import QFrame, QListWidgetItem,QVBoxLayout,QStackedWidget,QLabel,QListWidget
+from PyQt6.QtWidgets import QFrame, QMenu,QListWidgetItem,QVBoxLayout,QStackedWidget,QMessageBox,QLabel,QListWidget
 from PyQt6.QtCore import QSize, QThread, Qt, pyqtSignal,QUrl,QMimeData
-from PyQt6.QtGui import QImage, QMouseEvent, QPixmap,QDrag,QIcon
+from PyQt6.QtGui import QImage, QMouseEvent, QPixmap,QDrag,QIcon,QContextMenuEvent
 
 #multi threading to stop UI freezing when loading large folders
 
@@ -21,9 +21,11 @@ class ImageLoaderThread(QThread):
         for root, dirs, files in os.walk(self.folder_path):
             
             #check for interruption request and stop the thread
-            if self.isInterruptionRequested():
-                return
+            
             for file in files:
+                #check to stop itself before loading files to prevent overloading cpu if user rapid clicks between folders (i did it to test and my pc lagged like crazy)
+                if self.isInterruptionRequested():
+                    return
                 ext = os.path.splitext(file)[1].lower()
                 if ext in self.valid_extensions:
                     full_path = os.path.join(root, file)
@@ -78,6 +80,7 @@ class ReferenceGrid(QListWidget):
             self.setStyleSheet("QListWidget { border: none; background-color: transparent; }")
             self.setDragEnabled(True)
             self.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
+            self.setSelectionRectVisible(True) #display selection drag box
         
         def mouseMoveEvent(self, event): # type: ignore
             if event.buttons()&Qt.MouseButton.LeftButton:
@@ -115,8 +118,55 @@ class ReferenceGrid(QListWidget):
             allowed_actions = Qt.DropAction.CopyAction | Qt.DropAction.MoveAction | Qt.DropAction.LinkAction
                 
             drag.exec(allowed_actions,Qt.DropAction.CopyAction)
+        
+        def contextMenuEvent(self,event:QContextMenuEvent): #type:ignore
+            pos=self.viewport().mapFromGlobal(event.globalPos())#type:ignore
+            item = self.itemAt(pos)
             
-
+            #if user right click empty space do nothing
+            if item is None:
+                return
+            #if item isnt part of a multi selection then select the one item only
+            if not item.isSelected():
+                self.clearSelection()
+                item.setSelected(True)
+            
+            menu = QMenu(self) #type:ignore
+            menu.setStyleSheet("background-color: #34495e;color:white;padding:5px;")
+            
+            #change text based on how many items are selected            
+            selected_count= len(self.selectedItems())
+            delete_text=f"Delete Image" if selected_count==1 else f"Delete{selected_count} Images"
+            
+            delete_action = menu.addAction(delete_text)
+            action = menu.exec(event.globalPos())
+            
+            if action==delete_action:
+                self.remove_selected_images()  
+        
+        def remove_selected_images(self):
+            items_to_delete = self.selectedItems()
+            
+            #safety net
+            reply=QMessageBox.question(
+                self,
+                "Delete Images",
+                f"Are you sure you want to PERMANENTLY delete {len(items_to_delete)} file(s)?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No
+            )
+            
+            if reply == QMessageBox.StandardButton.Yes:
+                #iterate backwards
+                for item in reversed(items_to_delete):
+                    path= item.data(Qt.ItemDataRole.UserRole)
+                    try:
+                        os.remove(path)
+                        row=self.row(item)
+                        self.takeItem(row)
+                    except Exception as e:
+                        print(f"Error deleting file {path}: {e}")      
+                
 #this class handles the drag and drop of folders onto the canvas and displays the image grid. It emits a signal when a folder is dropped so the main window can add it to the sidebar. It also has a method to load images from a given folder path and display them as thumbnails in the grid.
 
 class DropCanvas(QFrame):
@@ -161,7 +211,8 @@ class DropCanvas(QFrame):
         #Track currently open folder and background downloads
         self.active_folder=None
         self.active_downloaders =[]
-    
+        #Hold dying threads
+        self.dying_threads = []
     
     #handle drag enter event
     def dragEnterEvent(self, event): # type: ignore
@@ -260,12 +311,21 @@ class DropCanvas(QFrame):
         self.grid.clear()
         #if a loader thread is already running, terminate it before starting a new one to prevent multiple threads running at the same time if user quickly loads different folders
         if self.loader_thread and self.loader_thread.isRunning():
+            #ask thread to stop
             self.loader_thread.requestInterruption()
-            self.loader_thread.wait()
+            #sever the radio connection so old images don't pop up in the new folder
+            self.loader_thread.image_loaded.disconnect()
+            
+            #put thread into dying
+            self.dying_threads.append(self.loader_thread)
+            
+            #remove threads that died
+            self.dying_threads = [t for t in self.dying_threads if t.isRunning()]
+            
+          
 
-        #Start the background worker
+        #Start the background worker for the NEW folder
         self.loader_thread = ImageLoaderThread(folder_path, self.valid_extensions)
-        #Connect the worker's signal to our UI update function
         self.loader_thread.image_loaded.connect(self.add_thumbnail_from_thread)
         self.loader_thread.start()
         
