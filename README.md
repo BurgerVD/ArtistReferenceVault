@@ -47,12 +47,12 @@ python main.py
 
 ## Roadmap 
 
-- Remember folders and images between sessions
+
 - Automatic tagging / favorites
 - Search/filter
 - Adjustable thumbnail size
-- Delete, reorder, create new folder
-- Menu 
+- reorder
+
 ---
 
 If you end up using it in your workflow and something feels annoying, open an issue — that’s usually the best way to decide what to add next.
