@@ -130,4 +130,9 @@ class ReferenceVault(QMainWindow):
         if folder_path != self.current_folder_path: #only reload if different folder is clicked
             self.current_folder_path = folder_path
         self.canvas.load_images_from_path(folder_path)
-       
+    
+    def closeEvent(self,event): #type:ignore
+        print("shutting down...")
+        #stop background activity
+        self.canvas.stop_threads()
+        event.accept()   

@@ -1,4 +1,7 @@
 import os
+import shutil #copy local files
+import urllib.request #download web files
+import uuid #generate unique filename for web images
 from PyQt6 import QtCore
 from PyQt6.QtWidgets import QFrame, QListWidgetItem,QVBoxLayout,QStackedWidget,QLabel,QListWidget
 from PyQt6.QtCore import QSize, QThread, Qt, pyqtSignal,QUrl,QMimeData
@@ -34,6 +37,34 @@ class ImageLoaderThread(QThread):
                         
                         self.image_loaded.emit(full_path, scaled_img)
 
+#thread to handle image downloads from web(Pinterest,etc)
+class WebImageDownloader(QThread):
+    download_complete = pyqtSignal(str) #emit saved file path
+    
+    def __init__(self,url,dest_folder):
+        super().__init__()
+        self.url=url
+        self.dest_folder = dest_folder
+        
+    def run(self):
+        try:
+            #disguise as a web browser
+            req=urllib.request.Request(self.url,headers={'User-Agent':'Mozilla/5.0'})
+            with urllib.request.urlopen(req) as response:
+                #generate random filename unique
+                filename=f"web_import_{uuid.uuid4().hex[:8]}.jpg"
+                full_path=os.path.join(self.dest_folder,filename)
+                
+                #write to hdd
+                with open(full_path,'wb') as f:
+                    f.write(response.read())    
+            
+            #tell main thread finsihed
+            self.download_complete.emit(full_path)
+        
+        except Exception as e:
+            print(f"Failed to download web image: {e}")    
+        
 
 #custom QListWidget to display image thumbnails in a grid and allow dragging them onto other applications
 class ReferenceGrid(QListWidget):
@@ -123,12 +154,15 @@ class DropCanvas(QFrame):
         self.stack.addWidget(self.welcome_screen)
         self.stack.addWidget(self.grid)
         
-        
-      
-        
         #allowed image formats
         self.valid_extensions = ['.jpg', '.jpeg', '.png', '.bmp', '.webp']
         self.loader_thread=None #to keep reference to the loader thread and prevent garbage collection while running
+
+        #Track currently open folder and background downloads
+        self.active_folder=None
+        self.active_downloaders =[]
+    
+    
     #handle drag enter event
     def dragEnterEvent(self, event): # type: ignore
         #accept the event if it contains urls (files)
@@ -142,25 +176,92 @@ class DropCanvas(QFrame):
     def dragLeaveEvent(self, event): # type: ignore
         self.setStyleSheet("background-color: #1e1e1e;color: gray;")            
         
-    #triggered when the user drops files onto the canvas
+    #triggered when the user drops files onto the canvas determines if web based or local
     def dropEvent(self, event): # type: ignore
         self.setStyleSheet("background-color: #1e1e1e;color: gray;")
-        for url in event.mimeData().urls():
-            path=url.toLocalFile()
-            #check if file or folder
-            if os.path.isdir(path):
-                #for folders, emit signal with folder name and path 
-                folder_name=os.path.basename(path)
-                self.folder_dropped.emit(folder_name,path)
-      
+        mime = event.mimeData() #detect if the dropped item is a file/folder from the OS or a web link by checking the mime data. If it has urls, it's likely from the OS, if it has text that looks like a URL, it's likely from the web.
+        
+        if not mime.hasUrls():
+            return
+        
+        for url in mime.urls():
+            #image is from the web, Pinterest,google images
+            if url.scheme() in ['http', 'https']:
+                web_link = url.toString()
+                
+                print("Web link dropped:", {web_link})     
+                #check if looking at a folder
+                if self.active_folder:
+                    print(f"Downloading web image:{web_link}")
+                    self.download_web_image(web_link)
+                else:
+                    print("Error: No folder selected to save web image into!")    
+            
+            #image is from the local file system    
+            elif url.isLocalFile():
+                path = url.toLocalFile()
+                
+                if os.path.isdir(path):
+                    folder_name = os.path.basename(path)
+                    self.folder_dropped.emit(folder_name, path) #emit signal to add folder to sidebar
+                
+                elif os.path.isfile(path):
+                    print(f"file dropped: {path}")
+                    if self.active_folder:
+                        self.copy_local_image(path)
+                    else:
+                        print("Error: No folder selected to copy the image into")        
+    
+    
+    #helper function for copying and thumbnailing
+    def copy_local_image(self,source_path):
+        #Type guard
+        if not self.active_folder or not isinstance(self.active_folder,str):
+            print("Safety trigger: no active folder to copy into")
+            return
+        
+        ext= os.path.splitext(source_path)[1].lower()
+        if ext in self.valid_extensions:
+            filename=os.path.basename(source_path)
+            dest_path = os.path.join(self.active_folder, filename)
+            #dont crash if a file with same name already exists
+            if not os.path.exists(dest_path):
+                shutil.copy2(source_path,dest_path)
+                print(f"Copied image to: {dest_path}")
+    
+    #download web image using thread                
+    def download_web_image(self,url):
+        downloader = WebImageDownloader(url,self.active_folder)
+        downloader.download_complete.connect(self.add_single_thumbnail)
+        downloader.start()
+        
+        #keep reference
+        self.active_downloaders.append(downloader)
+        #clean old threads 
+        self.active_downloaders = [d for d in self.active_downloaders if d.isRunning()]
+    
+    #create thumbnail when single image is dropped
+    def add_single_thumbnail(self,image_path):
+        img=QImage(image_path)
+        if not img.isNull():
+            scaled_img = img.scaled(150,150,Qt.AspectRatioMode.KeepAspectRatio,Qt.TransformationMode.SmoothTransformation)
+            self.add_thumbnail_from_thread(image_path,scaled_img)
+    
+                
       #for files, check if it's a valid image and add to grid       
     def load_images_from_path(self,folder_path):
+        #update tracker when new folder is clicked
+        self.active_folder=folder_path
+        
+        
+        
         #wipe current grid
         self.stack.setCurrentWidget(self.grid) #switch to grid view when loading images
         self.grid.clear()
         #if a loader thread is already running, terminate it before starting a new one to prevent multiple threads running at the same time if user quickly loads different folders
         if self.loader_thread and self.loader_thread.isRunning():
             self.loader_thread.requestInterruption()
+            self.loader_thread.wait()
 
         #Start the background worker
         self.loader_thread = ImageLoaderThread(folder_path, self.valid_extensions)
@@ -181,4 +282,8 @@ class DropCanvas(QFrame):
         item.setData(Qt.ItemDataRole.UserRole, image_path)
         item.setToolTip(os.path.basename(image_path))
         self.grid.addItem(item)    
-                
+     
+    def stop_threads(self):
+        if self.loader_thread and self.loader_thread.isRunning():
+            self.loader_thread.requestInterruption()
+            self.loader_thread.wait() 
