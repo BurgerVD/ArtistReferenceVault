@@ -40,19 +40,16 @@ python main.py
 3. Click the folder name on the left to view it
 4. Select one or more thumbnails and drag them into whatever you’re working in
 
-## Notes / Known quirks
 
-- This is intentionally simple right now: it doesn’t copy/move files or manage a library database — it just points at folders you drop in for the current session.
-- If you switch folders quickly while thumbnails are still loading, the previous load gets interrupted so it doesn’t keep chewing through the filesystem in the background.
 
 ## Roadmap 
 
-- Remember folders and images between sessions
+
 - Automatic tagging / favorites
 - Search/filter
 - Adjustable thumbnail size
-- Delete, reorder, create new folder
-- Menu 
+- reorder
+
 ---
 
 If you end up using it in your workflow and something feels annoying, open an issue — that’s usually the best way to decide what to add next.
