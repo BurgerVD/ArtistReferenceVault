@@ -1,9 +1,10 @@
-import onnxruntime
+
+import os
 import sys
+
+
 from PyQt6.QtWidgets import QApplication
 from window import ReferenceVault
-
-
 
 #entry point of the application
 if __name__ == "__main__":

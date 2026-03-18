@@ -61,3 +61,41 @@ class DatabaseManager:
         #Delete the folder from the database based on the unique path
         cursor.execute("DELETE FROM folders WHERE path = ?", (path,))
         self.conn.commit()
+        
+    def search_images_by_tag(self,folder_path,search_term):
+        cursor = self.conn.cursor()
+         #use like operator to match search term
+        query="""
+            SELECT DISTINCT image_path
+            FROM tags
+            WHERE image_path LIKE ? AND tag LIKE ?
+        """
+        
+        #append % to the folder path so it matches a file inside that folder
+        folder_wildcard = f"{folder_path}%"   
+        search_wildcard=f"{search_term}%"
+        
+        cursor.execute(query,(folder_wildcard,search_wildcard))
+        
+        #return list of matching file paths
+        return [row[0] for row in cursor.fetchall()]
+    
+    #for auto complete search
+    def get_unique_tags(self):
+        cursor=self.conn.cursor()
+        #get every unique tag that exists
+        cursor.execute("SELECT DISTINCT tag FROM tags")
+        return [row[0] for row in cursor.fetchall()]
+    
+    def global_search_by_tag(self,search_term):
+        cursor=self.conn.cursor()
+        search_wildcard=f"%{search_term}%"
+        
+        #look across entire DB
+        query="""
+           SELECT DISTINCT image_path
+           FROM tags
+           WHERE tag LIKE ?
+        """
+        cursor.execute(query,(search_wildcard,))
+        return [row[0] for row in cursor.fetchall()]   

@@ -12,7 +12,7 @@ from PyQt6.QtCore import QThread, pyqtSignal
 class AITaggerWorker(QThread):
      #emit the image path and list of generated tags
     tags_generated = pyqtSignal(str,list)
-    
+    engine_ready = pyqtSignal()
     def __init__(self):
         super().__init__()
         self.inbox = queue.Queue()
@@ -43,11 +43,22 @@ class AITaggerWorker(QThread):
                 self.tags_vocab.append(row[1]) #tag name in second column
         
         print("Warming up ONNX inference engine")
-        self.session = ort.InferenceSession(model_path,providers=['CPUExecutionProvider'])
+        sess_options = ort.SessionOptions()
+        #limit threads
+        sess_options.intra_op_num_threads=1
+        sess_options.intra_op_num_threads=1
         
+        
+        
+        self.session = ort.InferenceSession(
+                model_path, 
+                sess_options=sess_options, 
+                providers=['CPUExecutionProvider']
+            ) 
+            
         print("WD14 Art Tagger Engine warm and ready")
         
-        
+        self.engine_ready.emit()
         
         #Consumer Loop
         while self.is_running:

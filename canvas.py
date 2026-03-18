@@ -2,6 +2,7 @@ import os
 import shutil #copy local files
 import urllib.request #download web files
 import uuid #generate unique filename for web images
+import hashlib
 from PyQt6 import QtCore
 from PyQt6.QtWidgets import QFrame, QMenu,QListWidgetItem,QVBoxLayout,QStackedWidget,QMessageBox,QLabel,QListWidget,QProgressBar
 from PyQt6.QtCore import QSize, QThread, Qt, pyqtSignal,QUrl,QMimeData
@@ -12,32 +13,57 @@ from PyQt6.QtGui import QImage, QMouseEvent, QPixmap,QDrag,QIcon,QContextMenuEve
 class ImageLoaderThread(QThread):
     image_loaded=pyqtSignal(str, QImage)
     
-    def __init__(self,folder_path,valid_extensions):
+    def __init__(self,target,valid_extensions):
         super().__init__()
-        self.folder_path=folder_path
+        self.target = target #folder path(str) or list of paths (list)
         self.valid_extensions=valid_extensions
+        #setup cache directory
+        self.cache_dir = os.path.join(os.getcwd(),'.thumb_cache')
+        os.makedirs(self.cache_dir,exist_ok=True)
+        
         
     def run(self):
-        for root, dirs, files in os.walk(self.folder_path):
-            
-            #check for interruption request and stop the thread
-            
-            for file in files:
-                #check to stop itself before loading files to prevent overloading cpu if user rapid clicks between folders (i did it to test and my pc lagged like crazy)
-                if self.isInterruptionRequested():
-                    return
-                ext = os.path.splitext(file)[1].lower()
-                if ext in self.valid_extensions:
-                    full_path = os.path.join(root, file)
+        #get files based on what type of target is received
+        files_to_process = []
+        
+        if isinstance(self.target, str): 
+            #if folder then walk through it
+            for root, dirs, files in os.walk(self.target):
+                for file in files:
+                    files_to_process.append(os.path.join(root, file))
                     
-                    #load the image using QImage which is more memory efficient than QPixmap for processing
+        elif isinstance(self.target, list):
+           
+            #global search list.
+            files_to_process = self.target
+
+        #Process all gathered files (with cache)
+        for full_path in files_to_process:
+            if self.isInterruptionRequested():
+                return
+                
+            ext = os.path.splitext(full_path)[1].lower()
+            if ext in self.valid_extensions and os.path.exists(full_path):
+                
+                #Cache: turn file path into a unique hash
+                path_bytes = full_path.encode('utf-8')
+                path_hash = hashlib.md5(path_bytes).hexdigest()
+                cache_path = os.path.join(self.cache_dir, f"{path_hash}.jpg")
+                
+                #Check if a thumbnail already exists
+                if os.path.exists(cache_path):
+                    img = QImage(cache_path)
+                    if not img.isNull():
+                        self.image_loaded.emit(full_path, img)
+                else:
+                    #Not in cache: load original image, scale it, and SAVE it to cache
                     img = QImage(full_path)
                     if not img.isNull():
-                        
                         scaled_img = img.scaled(150, 150, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-                        
-                        
+                        scaled_img.save(cache_path, "JPG", 85) #save it
                         self.image_loaded.emit(full_path, scaled_img)
+       
+           
 
 #thread to handle image downloads from web(Pinterest,etc)
 class WebImageDownloader(QThread):
@@ -72,6 +98,7 @@ class WebImageDownloader(QThread):
 class ReferenceGrid(QListWidget):
         def __init__(self):
             super().__init__()
+            
             self.setViewMode(QListWidget.ViewMode.IconMode)
             self.setIconSize(QtCore.QSize(150, 150))
             self.setResizeMode(QListWidget.ResizeMode.Adjust)
@@ -136,36 +163,48 @@ class ReferenceGrid(QListWidget):
             
             #change text based on how many items are selected            
             selected_count= len(self.selectedItems())
-            delete_text=f"Delete Image" if selected_count==1 else f"Delete{selected_count} Images"
             
-            delete_action = menu.addAction(delete_text)
+            #create two distinct delete options
+            
+            remove_ref_action = menu.addAction(f"Remove {selected_count} Reference(s) from Vault")
+            menu.addSeparator()
+            delete_perm_action = menu.addAction(f"Delete {selected_count} File(s) Permanently from PC")
+            
             action = menu.exec(event.globalPos())
             
-            if action==delete_action:
-                self.remove_selected_images()  
+            if action==remove_ref_action:
+                self.remove_selected_images(permanent=False) 
+            elif action ==delete_perm_action:
+                self.remove_selected_images(permanent=True)     
         
-        def remove_selected_images(self):
+        def remove_selected_images(self,permanent=False):
             items_to_delete = self.selectedItems()
             
-            #safety net
-            reply=QMessageBox.question(
-                self,
-                "Delete Images",
-                f"Are you sure you want to PERMANENTLY delete {len(items_to_delete)} file(s)?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No
-            )
-            
-            if reply == QMessageBox.StandardButton.Yes:
-                #iterate backwards
-                for item in reversed(items_to_delete):
-                    path= item.data(Qt.ItemDataRole.UserRole)
+            #show if permanent delete
+            if permanent:
+                reply = QMessageBox.question(
+                    self,
+                    "Delete Images",
+                    f"Are you sure you want to PERMANENTLY delete {len(items_to_delete)} file(s) from your hard drive?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No
+                )
+                if reply != QMessageBox.StandardButton.Yes:
+                    return
+
+            #iterate backwards
+            for item in reversed(items_to_delete):
+                path = item.data(Qt.ItemDataRole.UserRole)
+                row = self.row(item)
+                self.takeItem(row) #hide from ui
+                
+                #only touch the OS file system if permanent is True
+                if permanent:
                     try:
                         os.remove(path)
-                        row=self.row(item)
-                        self.takeItem(row)
                     except Exception as e:
-                        print(f"Error deleting file {path}: {e}")      
+                        print(f"Error deleting file {path}: {e}")
+                
                 
 #this class handles the drag and drop of folders onto the canvas and displays the image grid. It emits a signal when a folder is dropped so the main window can add it to the sidebar. It also has a method to load images from a given folder path and display them as thumbnails in the grid.
 
@@ -175,9 +214,11 @@ class DropCanvas(QFrame):
     image_added = pyqtSignal(str)
     needs_new_folder = pyqtSignal()
     #canvas for image grid
-    def __init__(self):
+    def __init__(self,db_manager):
         super().__init__()
+        self.db=db_manager
         self.setStyleSheet("background-color: #1e1e1e;color: gray;")
+        
         self.setAcceptDrops(True)
         
         layout=QVBoxLayout(self)
@@ -206,12 +247,21 @@ class DropCanvas(QFrame):
         #welcome screen with instructions
         self.welcome_screen = QLabel(
             "Welcome to your Reference Vault!\n\n"
-            "1. Drag and drop a folder of images anywhere into this window.\n"
-            "2. Click the folder name on the left to view your references.\n"
+            "📁 Drag & Drop folders or web images here.\n"
+            "🔍 Search for images using tags globally at the top.\n"
+            "🖱️ Double-click any image to view it full size.\n"
+            "🖱️ Right-click images or folders for more options."
         )
         self.welcome_screen.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.welcome_screen.setStyleSheet("color: #888888; font-size: 18px;")
         
+        #Empty search screen
+        self.no_results_screen = QLabel(
+            "No images match this search.\n\n"
+            "Try a different tag or check your spelling!"
+        )
+        self.no_results_screen.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.no_results_screen.setStyleSheet("color: #666666; font-size: 18px;")
         
         #thumbnail grid
         self.grid = ReferenceGrid()
@@ -222,6 +272,7 @@ class DropCanvas(QFrame):
         self.grid.setStyleSheet("QListWidget { border: none; background-color: transparent; }")
         self.stack.addWidget(self.welcome_screen)
         self.stack.addWidget(self.grid)
+        self.stack.addWidget(self.no_results_screen)
         
         #allowed image formats
         self.valid_extensions = ['.jpg', '.jpeg', '.png', '.bmp', '.webp']
@@ -373,7 +424,31 @@ class DropCanvas(QFrame):
         self.loader_thread.finished.connect(self.progress_bar.hide)
         self.loader_thread.start()
   
+    def load_images_from_list(self,file_paths_list):
+        self.active_folder=None
+        self.stack.setCurrentWidget(self.grid)
+        self.grid.clear()
+        #check if images with the tag exist
+        if not file_paths_list:
+            self.stack.setCurrentWidget(self.no_results_screen)
+            return
+        #else show the grid
+        self.stack.setCurrentWidget(self.grid)
         
+        if self.loader_thread is not None and self.loader_thread.isRunning():
+            self.loader_thread.requestInterruption()
+            self.loader_thread.image_loaded.disconnect()
+            self.dying_threads.append(self.loader_thread)
+            self.dying_threads=[t for t in self.dying_threads if t.isRunning()]
+        
+        self.loader_thread = ImageLoaderThread(file_paths_list,self.valid_extensions)
+        self.loader_thread.image_loaded.connect(self.add_thumbnail_from_thread)
+        
+        self.progress_bar.show()
+        self.loader_thread.finished.connect(self.progress_bar.hide)
+        self.loader_thread.start()       
+        
+            
     
     def add_thumbnail_from_thread(self, image_path, qimage):
         #convert QImage to QPixmap in the main thread before creating the icon (QPixmap is not thread safe)
@@ -382,7 +457,18 @@ class DropCanvas(QFrame):
         item = QListWidgetItem()
         item.setIcon(QIcon(pixmap))
         item.setData(Qt.ItemDataRole.UserRole, image_path)
-        item.setToolTip(os.path.basename(image_path))
+
+        #build tag tooltip with wrapping
+        tags = self.db.get_tags_for_image(image_path)
+        if tags:
+            #group into chunks so it doesnt fill whole screen
+            chunked_tags = [", ".join(tags[i:i+5]) for i in range(0,len(tags),5)]
+            tag_string=",\n".join(chunked_tags)
+            item.setToolTip(f"{os.path.basename(image_path)}\nTags: {tag_string}")
+        else:
+            item.setToolTip(f"{os.path.basename(image_path)}\n(Tagging in progress...)")    
+        
+        
         self.grid.addItem(item)    
      
     def stop_threads(self):
@@ -408,3 +494,17 @@ class DropCanvas(QFrame):
                     downloader.wait() 
                     
         print("All threads successfully terminated.")
+        
+    def filter_grid(self,valid_paths):
+        #if valid paths is none then search bar is empty so unhide all
+        for i in range(self.grid.count()):
+            item = self.grid.item(i)
+            
+            if item is not None:
+                if valid_paths is None:
+                    item.setHidden(False)
+                
+                else: 
+                    path = item.data(Qt.ItemDataRole.UserRole)
+                    #if image path is not in the DB list of matches,then hide it
+                    item.setHidden(path not in valid_paths)       
