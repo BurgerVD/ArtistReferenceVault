@@ -105,7 +105,7 @@ class ReferenceVault(QMainWindow):
         self.ai_engine.tags_generated.connect(self.update_image_tooltip)
         self.ai_engine.engine_ready.connect(self.on_ai_ready)
         
-        QTimer.singleShot(500,self.ai_engine.start)
+        QTimer.singleShot(500, lambda: self.ai_engine.start(QThread.Priority.LowPriority))
         
         
         self.current_folder_path = None #track the currently loaded folder path to avoid reloading if the same folder is clicked again

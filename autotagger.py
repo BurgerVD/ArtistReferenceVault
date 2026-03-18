@@ -43,18 +43,21 @@ class AITaggerWorker(QThread):
                 self.tags_vocab.append(row[1]) #tag name in second column
         
         print("Warming up ONNX inference engine")
+        #Force OpenMP to only use 1 thread at the OS level
+        os.environ["OMP_NUM_THREADS"] = "1"
+        
         sess_options = ort.SessionOptions()
-        #limit threads
-        sess_options.intra_op_num_threads=1
-        sess_options.intra_op_num_threads=1
-        
-        
+        #Strictly limit ONNX internal and external operations
+        sess_options.intra_op_num_threads = 1
+        sess_options.inter_op_num_threads = 1
+        #Prevent ONNX from aggressively parallelizing across your CPU cores
+        sess_options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
         
         self.session = ort.InferenceSession(
                 model_path, 
                 sess_options=sess_options, 
                 providers=['CPUExecutionProvider']
-            ) 
+            )
             
         print("WD14 Art Tagger Engine warm and ready")
         
