@@ -102,6 +102,7 @@ class ReferenceVault(QMainWindow):
         #Load the Ai model
         self.ai_engine = AITaggerWorker()
         self.ai_engine.tags_generated.connect(self.save_generated_tags)
+        self.ai_engine.tags_generated.connect(self.update_image_tooltip)
         self.ai_engine.engine_ready.connect(self.on_ai_ready)
         
         QTimer.singleShot(500,self.ai_engine.start)
@@ -409,6 +410,24 @@ class ReferenceVault(QMainWindow):
         for tag in tags_list:
             self.db.add_tag(image_path,tag)    
         self.update_search_autocomplete() #learn new words in real time as ai tags
+        
+        
+    
+    def update_image_tooltip(self, image_path, tags_list):
+        #Finds the tagged image in the UI grid and updates its hover text
+        
+        #Format the tags
+        chunked_tags = [", ".join(tags_list[i:i+5]) for i in range(0, len(tags_list), 5)]
+        tag_string = ",\n".join(chunked_tags)
+        new_tooltip = f"{os.path.basename(image_path)}\nTags:\n{tag_string}"
+        
+        #Loop through the visual grid to find the matching thumbnail
+        for i in range(self.canvas.grid.count()):
+            item = self.canvas.grid.item(i)
+            #Check if this thumbnail's saved path matches the one the AI just finished
+            if item is not None and item.data(Qt.ItemDataRole.UserRole) == image_path:
+                item.setToolTip(new_tooltip)
+                break #Stop searching once updated it    
     
     #function starts the crawler
     def start_crawler(self,folder_paths_list):        
