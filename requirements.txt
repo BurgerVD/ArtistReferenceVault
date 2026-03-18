@@ -1,0 +1,8 @@
+#Core GUI Framework
+PyQt6>=6.4.0
+
+#AI Inference Engine (CPU Version)
+onnxruntime>=1.16.3
+
+#Data Science & Math (Pinned for ONNX compatibility)
+numpy<2.0.0
