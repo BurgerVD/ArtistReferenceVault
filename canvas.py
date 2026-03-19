@@ -27,10 +27,15 @@ class ImageLoaderThread(QThread):
         files_to_process = []
         
         if isinstance(self.target, str): 
-            #if folder then walk through it
-            for root, dirs, files in os.walk(self.target):
-                for file in files:
-                    files_to_process.append(os.path.join(root, file))
+            #if folder then only scan the top level, ignore subfolders
+            try:
+                for item_name in os.listdir(self.target):
+                    full_path = os.path.join(self.target, item_name)
+                    #check if it is a file (not a folder) before adding it to the grid
+                    if os.path.isfile(full_path):
+                        files_to_process.append(full_path)
+            except Exception as e:
+                print(f"Error reading folder contents: {e}")
                     
         elif isinstance(self.target, list):
            
@@ -326,8 +331,16 @@ class DropCanvas(QFrame):
                 path = url.toLocalFile()
                 
                 if os.path.isdir(path):
-                    folder_name = os.path.basename(path)
-                    self.folder_dropped.emit(folder_name, path) #emit signal to add folder to sidebar
+                    #Recursive folder search
+                    #find all subfolders
+                    for root_dir,sub_dirs,files in os.walk(path):
+                    
+                        #prevent the app from adding hidden system folders (like .git or .thumb_cache)
+                        sub_dirs[:] = [d for d in sub_dirs if not d.startswith('.')]
+                        
+                        #get the name of the current folder in the tree
+                        folder_name = os.path.basename(root_dir)
+                        self.folder_dropped.emit(folder_name, root_dir) #emit signal to add folder to sidebar
                 
                 elif os.path.isfile(path):
                     print(f"file dropped: {path}")
