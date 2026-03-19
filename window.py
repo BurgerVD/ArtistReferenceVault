@@ -7,7 +7,7 @@ from pathlib import Path
 from autotagger import AITaggerWorker
 
 #controller for the main canvas area where images are displayed. It also handles drag and drop of folders to add them to the vault.
-from PyQt6.QtWidgets import  QDialog,QMessageBox,QCompleter,QInputDialog,QFrame,QMenu,QLineEdit, QHBoxLayout, QListWidgetItem, QMainWindow,QVBoxLayout,QStackedWidget,QLabel,QListWidget, QWidget,QPushButton,QMessageBox,QListView
+from PyQt6.QtWidgets import  QStyle,QDialog,QMessageBox,QCompleter,QInputDialog,QFrame,QMenu,QLineEdit, QHBoxLayout, QListWidgetItem, QMainWindow,QVBoxLayout,QStackedWidget,QLabel,QListWidget, QWidget,QPushButton,QMessageBox,QListView,QTreeWidget,QTreeWidgetItem,QTreeWidgetItemIterator
 from PyQt6.QtCore import Qt,QThread,pyqtSignal,QTimer,QStringListModel,QUrl
 from canvas import DropCanvas
 from database import DatabaseManager
@@ -141,8 +141,15 @@ class ReferenceVault(QMainWindow):
         self.update_checker.start()
         #Load the Ai model
         self.ai_engine = AITaggerWorker()
+        
+        #fix ui freezing
+        self.tag_buffer = []
+        self.db_commit_timer = QTimer()
+        self.db_commit_timer.timeout.connect(self.process_tag_buffer)
+        self.db_commit_timer.start(2000) # Tick every 2 seconds
+        
         self.ai_engine.tags_generated.connect(self.save_generated_tags)
-        self.ai_engine.tags_generated.connect(self.update_image_tooltip)
+       
         self.ai_engine.engine_ready.connect(self.on_ai_ready)
         
         QTimer.singleShot(500, lambda: self.ai_engine.start(QThread.Priority.NormalPriority))
@@ -166,28 +173,35 @@ class ReferenceVault(QMainWindow):
         self.sidebar.setFixedWidth(250)
         self.sidebar.setStyleSheet("background-color: #2c3e50;color: white;")
         sidebar_layout = QVBoxLayout(self.sidebar)
-        #list for folders
-        self.folder_list=QListWidget()
+        
+        #collapsible Tree Sidebar
+        self.folder_list = QTreeWidget()
+        self.folder_list.setHeaderHidden(True)
+        self.folder_list.setDragEnabled(True)
+        self.folder_list.setAcceptDrops(True)
+        self.folder_list.setDropIndicatorShown(True)
+        self.folder_list.setDragDropMode(QTreeWidget.DragDropMode.InternalMove)
+        
         self.folder_list.setStyleSheet("""
-            QListWidget {
+            QTreeWidget {
                 border: none;
                 font-size: 14px;
+                background-color: #2c3e50;
+                color: white;
             }
-            QListWidget::item {
-                padding: 10px;
+            QTreeWidget::item {
+                padding: 5px;
             }
-            QListWidget::item:selected {
+            QTreeWidget::item:selected {
                 background-color: #34495e;
             }
-            """)
+        """)
         #connect folder click to load images in canvas
         self.folder_list.itemClicked.connect(self.on_sidebar_folder_clicked)
-        
-      
-        
-        
         sidebar_layout.addWidget(self.folder_list)
-        self.ai_status_label = QLabel("🤖 AI: Sleeping")
+        
+        #Show ai status on UI
+        self.ai_status_label = QLabel("🤖 Auto Tagger: Sleeping")
         self.ai_status_label.setStyleSheet("color: #2ecc71; padding: 10px; font-weight: bold; background-color: #273746; border-radius: 5px;")
         self.ai_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         sidebar_layout.addWidget(self.ai_status_label)
@@ -207,6 +221,8 @@ class ReferenceVault(QMainWindow):
         #connect double click to lightbox
         self.canvas.grid.itemDoubleClicked.connect(self.open_lightbox)
         
+        self.canvas.grid.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.canvas.grid.customContextMenuRequested.connect(self.on_image_context_menu)
         
         #load folders from database and add to sidebar on startup
         self.refresh_sidebar()
@@ -296,29 +312,33 @@ class ReferenceVault(QMainWindow):
         return vault_path
     
     #create folder
-    def create_custom_folder(self):
+    def create_custom_folder(self,parent_path=None):
+        # If user didn't right-click a specific folder, default to the master vault root
+        if parent_path is None:
+            parent_path = self.master_vault_path
+        
         folder_name, ok= QInputDialog.getText(self,"New Vault Folder","Enter folder name:")
         
         if ok and folder_name.strip():
             folder_name= folder_name.strip()
-            #build path
-            new_path = os.path.join(self.master_vault_path,folder_name)
-            os.makedirs(new_path,exist_ok=True)
+            #build path inside the selected parent folder
+            new_path = os.path.join(parent_path, folder_name)
+            os.makedirs(new_path, exist_ok=True)
             #add to db and sidebar visually
             self.add_folder_to_sidebar(folder_name,new_path)
             print(f"Created custom vault folder: {new_path}")
         
             #Make ui select the new folder
             #loop through sidebar to find new item just created
-            for i in range(self.folder_list.count()):
-                item = self.folder_list.item(i)
-                if item is not None and item.data(Qt.ItemDataRole.UserRole) == new_path:
-                    #select visually
+            iterator = QTreeWidgetItemIterator(self.folder_list)
+            while iterator.value():
+                item = iterator.value()
+                if item.data(0, Qt.ItemDataRole.UserRole) == new_path: #type:ignore
                     self.folder_list.setCurrentItem(item)
-                    self.current_folder_path=new_path
-                    #tell canvas to activate this path
+                    self.current_folder_path = new_path
                     self.canvas.load_images_from_path(new_path)
                     break
+                iterator += 1
      
     def contextMenuEvent(self,event:QContextMenuEvent): # type: ignore
         pos = self.folder_list.viewport().mapFromGlobal(event.globalPos()) #type: ignore
@@ -331,21 +351,66 @@ class ReferenceVault(QMainWindow):
         add_action = menu.addAction("+ New Folder") 
         menu.addSeparator() #type:ignore
         
+        #initialize variables so the linter knows they exist
+        rename_action = None
+        remove_ref_action = None
+        delete_perm_action = None
+        
         #show delete if right click on folder
         remove_ref_action=None
         delete_perm_action = None
         
         if item is not None:
             self.folder_list.setCurrentItem(item) #select the item that was right-clicked
-        
+
+            
+            #rename button
+            rename_action = menu.addAction("Rename Folder")
+            menu.addSeparator()
+            
             remove_ref_action = menu.addAction("Remove Folder from Vault (Keep Files)")
             delete_perm_action = menu.addAction("Delete Folder Permanently from PC")
         
         
         action = menu.exec(event.globalPos())
-        
+        #if the user clicks away from the menu, stop immediately.
+        if action is None:
+            return
+        #Handle global actions
         if action == add_action:
-            self.create_custom_folder()
+            if item is not None:
+                #User right-clicked a specific folder, so create it inside that folder as a child
+                target_path = item.data(0, Qt.ItemDataRole.UserRole)
+                self.create_custom_folder(parent_path=target_path)
+            else:
+                #user right-clicked empty space, create the new folder at the root
+                self.create_custom_folder()
+            
+            
+          #Handle item-specific actions  
+        elif item is not None: 
+          if action==rename_action:  
+            old_path = item.data(0, Qt.ItemDataRole.UserRole)
+            old_name = item.text(0)
+            
+            new_name, ok = QInputDialog.getText(self, "Rename Folder", "Enter new folder name:", text=old_name)
+            if ok and new_name.strip() and new_name != old_name:
+                new_name = new_name.strip()
+                parent_dir = os.path.dirname(old_path)
+                new_path = os.path.join(parent_dir, new_name)
+                
+                try:
+                    # Rename on the actual Windows OS
+                    os.rename(old_path, new_path)
+                    # Safely update the Database
+                    self.db.rename_folder(old_path, new_path, new_name)
+                    
+                    self.current_folder_path = new_path
+                    self.refresh_sidebar()
+                    self.canvas.load_images_from_path(new_path)
+                except Exception as e:
+                    QMessageBox.critical(self, "Error", f"Could not rename folder. It might be open in another program.\n\n{e}")
+            
         elif remove_ref_action and action == remove_ref_action:
             self.remove_folder(item, permanent=False)    
         elif delete_perm_action and action == delete_perm_action:
@@ -356,7 +421,7 @@ class ReferenceVault(QMainWindow):
     
      
     def remove_folder(self, item,permanent=False):
-        path = item.data(Qt.ItemDataRole.UserRole)
+        path = item.data(0,Qt.ItemDataRole.UserRole)
         #warning for permanent folder deletion
         if permanent:
             
@@ -371,8 +436,8 @@ class ReferenceVault(QMainWindow):
                 return
 
         self.db.delete_folder(path) #remove from database
-        row = self.folder_list.row(item)
-        self.folder_list.takeItem(row) #remove from sidebar
+        #row = self.folder_list.row(item)
+        #self.folder_list.takeItem(row) #remove from sidebar
         
         if self.current_folder_path == path:
             self.canvas.grid.clear() 
@@ -385,50 +450,49 @@ class ReferenceVault(QMainWindow):
                 shutil.rmtree(path)
             except Exception as e:
                 print(f"Failed to permanently delete folder: {e}")
-        self.refresh_sidebar()
+        #self.refresh_sidebar()
     
     
      #sidebar with visual heirarchy   
     def refresh_sidebar(self):
         
         self.folder_list.clear()
-        
         saved_folders = self.db.get_folders()
-        #Sort by path so subfolders always appear directly under their parents!
+        
+        #sort paths so parents are processed before their children
         saved_folders.sort(key=lambda x: os.path.normpath(x[1]))
+        item_map = {}
         
         for name, path in saved_folders:
             clean_path = os.path.normpath(path)
-            depth = 0
+            parent_path = os.path.dirname(clean_path)
             
-            #Calculate how deep this folder is by counting its parents in the DB
-            for _, other_path in saved_folders:
-                clean_other = os.path.normpath(other_path)
-                #If this path is inside another path, increase its depth
-                if clean_path != clean_other and clean_path.startswith(clean_other + os.sep):
-                    depth += 1
+            #create the UI node
+            item = QTreeWidgetItem([name])
+            item.setData(0, Qt.ItemDataRole.UserRole, path)
             
-            #Apply the visual UI prefix
-            if depth == 0:
-                display_name = name
+            folder_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon) #type:ignore
+            item.setIcon(0, folder_icon)
+            
+            #if the parent path exists, attach this as a child
+            if parent_path in item_map:
+                parent_item = item_map[parent_path]
+                parent_item.addChild(item)
             else:
-                #add spaces based on depth
-                prefix = ("    " * (depth - 1)) + " └─ "
-                display_name = prefix + name
+                self.folder_list.addTopLevelItem(item)
                 
-            item = QListWidgetItem(display_name)
-            item.setData(Qt.ItemDataRole.UserRole, path)
-            self.folder_list.addItem(item)
+            item_map[clean_path] = item
             
-            #keep the currently active folder visually selected
+            #keep active folder selected
             if path == self.current_folder_path:
                 self.folder_list.setCurrentItem(item)
-
-        #on app startup, automatically select and load the very first folder
-        if not self.folder_list.currentItem() and self.folder_list.count() > 0:
-            first_item = self.folder_list.item(0)
+        #force tree to stay expanded 
+        self.folder_list.expandAll()       
+        #on app startup, automatically select the first folder
+        if not self.folder_list.currentItem() and self.folder_list.topLevelItemCount() > 0:
+            first_item = self.folder_list.topLevelItem(0)
             self.folder_list.setCurrentItem(first_item)
-            self.current_folder_path = first_item.data(Qt.ItemDataRole.UserRole) #type:ignore
+            self.current_folder_path = first_item.data(0, Qt.ItemDataRole.UserRole) #type:ignore
             self.canvas.load_images_from_path(self.current_folder_path)
     
     #add folder to sidebar when dropped and store full path in item data for later use
@@ -449,7 +513,7 @@ class ReferenceVault(QMainWindow):
        
     #when a folder is clicked in the sidebar, load its images in the canvas
     def on_sidebar_folder_clicked(self, item):
-        folder_path = item.data(Qt.ItemDataRole.UserRole) #get full path from item data
+        folder_path = item.data(0,Qt.ItemDataRole.UserRole) #get full path from item data
         if folder_path != self.current_folder_path: #only reload if different folder is clicked
             self.current_folder_path = folder_path
             self.search_bar.setEnabled(True)
@@ -470,12 +534,30 @@ class ReferenceVault(QMainWindow):
         
         event.accept()   
         
-    #save generated image tags    
+    #get the signal and keep it in RAM   
     def save_generated_tags(self,image_path,tags_list):
-        for tag in tags_list:
-            self.db.add_tag(image_path,tag)    
-        self.update_search_autocomplete() #learn new words in real time as ai tags
+        self.tag_buffer.append((image_path, tags_list))
+    
+    #process buffer every 2 seconds    
+    def process_tag_buffer(self):
+        if not self.tag_buffer:
+            return
+            
+        #save the current batch and clear the list so the AI can keep working
+        batch_to_process = self.tag_buffer[:]
+        self.tag_buffer.clear()
         
+        #save to DB in one big chunk
+        self.db.batch_add_tags(batch_to_process)
+        
+        #safely update the UI tooltips in bulk
+        for image_path, tags_list in batch_to_process:
+            self.update_image_tooltip(image_path, tags_list)
+            
+        #rebuild the search autocomplete ONLY once per batch, not per image
+        self.update_search_autocomplete()
+        print(f"Batch saved {len(batch_to_process)} images to database smoothly.")
+     
         
     
     def update_image_tooltip(self, image_path, tags_list):
@@ -511,12 +593,15 @@ class ReferenceVault(QMainWindow):
         #if user deletes thier search or types only spaces then show all images
         if not search_term:
             if self.current_folder_path:
-                #reselect the folder in the sidebar visually
-                for i in range(self.folder_list.count()):
-                    item = self.folder_list.item(i)
-                    if item is not None and item.data(Qt.ItemDataRole.UserRole) == self.current_folder_path:
+                #use Tree Iterator to reselect the folder visually ---
+                iterator = QTreeWidgetItemIterator(self.folder_list)
+                while iterator.value():
+                    item = iterator.value()
+                   
+                    if item.data(0, Qt.ItemDataRole.UserRole) == self.current_folder_path: #type:ignore
                         self.folder_list.setCurrentItem(item)
                         break
+                    iterator += 1
                 #reload the folder's images
                 self.canvas.load_images_from_path(self.current_folder_path)
             else:
@@ -552,7 +637,7 @@ class ReferenceVault(QMainWindow):
     
     def open_lightbox(self,item):
         #get file path attatched to a image that is double clicked by the user
-        image_path = item.data(Qt.ItemDataRole.UserRole)
+        image_path = item.data(0,Qt.ItemDataRole.UserRole)
         
         if image_path and os.path.exists(image_path):
             #spawn viewer
@@ -564,11 +649,12 @@ class ReferenceVault(QMainWindow):
             self,
             "Vault Controls & Help",
             "Welcome to Reference Vault!\n\n"
-            "• Adding Media: Drag & drop folders from your PC, or drag images directly from your web browser.\n"
-            "• Tagging: The app automatically analyzes your images in the background and assigns searchable tags.\n"
-            "• Global Search: Type any tag (like 'sword' or 'blue eyes') to instantly find matching images across all folders.\n"
-            "• Full-Screen View: Double-click any thumbnail to open the high-resolution lightbox.\n"
-            "• Managing Files: Right-click folders in the sidebar or images in the grid to safely remove them or permanently delete them."
+            "• Adding Media: Drag & drop folders from your PC into the main canvas.\n"
+            "• Folder Management: The sidebar matches your PC's folder hierarchy. Right-click any folder to rename it or remove it.\n"
+            "• Auto-Tagging: The AI analyzes your images in the background and assigns searchable tags.\n"
+            "• Manual Tag Editing: Right-click any image in the grid to manually edit or add custom tags.\n"
+            "• Global Search: Type any tag (like 'sword' or 'dynamic pose') to instantly find matching images.\n"
+            "• Full-Screen View: Double-click any thumbnail to open the high-resolution lightbox."
         )        
         
     def update_ai_status(self, count):
@@ -597,3 +683,48 @@ class ReferenceVault(QMainWindow):
         if reply == QMessageBox.StandardButton.Yes:
             #Opens the users default web browser (Chrome/Edge/etc) to the download page
             QDesktopServices.openUrl(QUrl(release_url))         
+    #spawns a right-click menu when clicking an image in the grid      
+    def on_image_context_menu(self, pos):
+        
+        item = self.canvas.grid.itemAt(pos)
+        if item is None:
+            return
+
+        menu = QMenu(self)
+        menu.setStyleSheet("background-color: #34495e; color: white; padding: 5px;")
+        
+        edit_tags_action = menu.addAction("Edit Tags")
+        
+        #spawn the menu exactly where the mouse is
+        action = menu.exec(self.canvas.grid.viewport().mapToGlobal(pos)) #type:ignore
+        
+        if action == edit_tags_action:
+            self.edit_image_tags(item)
+
+    def edit_image_tags(self, item):
+        """Pulls current tags, lets the user edit them, and saves to DB."""
+        image_path = item.data(Qt.ItemDataRole.UserRole) # QListWidget uses 1 arg!
+        
+        #get current tags from DB and convert to a comma-separated string
+        current_tags = self.db.get_tags_for_image(image_path)
+        current_tags_str = ", ".join(current_tags)
+        
+        #spawn popup window
+        new_tags_str, ok = QInputDialog.getText(
+            self, 
+            "Edit Image Tags", 
+            "Edit tags (comma separated):", 
+            text=current_tags_str
+        )
+        
+        if ok:
+            #clean up the user's input (remove extra spaces and make lowercase)
+            raw_tags = new_tags_str.split(',')
+            new_tags = [t.strip().lower() for t in raw_tags if t.strip()]
+            
+            #update Database
+            self.db.update_image_tags(image_path, new_tags)
+            
+            #update the hover Tooltip visually
+            self.update_image_tooltip(image_path, new_tags)
+            self.update_search_autocomplete()

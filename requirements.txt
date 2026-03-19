@@ -1,11 +1,11 @@
 # Core GUI Framework
-# Core GUI Framework
+
 PyQt6>=6.4.0
 
 # AI Inference Engine (CPU Version)
 onnxruntime==1.15.1
 
-# Data Science & Image Processing
+
 # Data Science & Image Processing
 numpy<2.0.0
 Pillow>=10.0.0

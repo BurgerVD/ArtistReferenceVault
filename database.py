@@ -99,3 +99,56 @@ class DatabaseManager:
         """
         cursor.execute(query,(search_wildcard,))
         return [row[0] for row in cursor.fetchall()]   
+    
+    #save hundreds of tags in a single operation instead of one by one
+    def batch_add_tags(self,tag_data_list):
+        cursor = self.conn.cursor()
+        if not tag_data_list:
+            return
+        
+        self.conn.execute("BEGIN TRANSACTION")
+        try:
+            for image_path, tags in tag_data_list:
+                for tag in tags:
+                    cursor.execute("INSERT OR IGNORE INTO tags (image_path,tag) VALUES (?,?)", (image_path, tag))
+            self.conn.commit()
+        except Exception as e:
+            self.conn.rollback()
+            print(f"Batch DB save failed: {e}")
+    
+    def rename_folder(self, old_path, new_path, new_name):
+        cursor = self.conn.cursor()
+        self.conn.execute("BEGIN TRANSACTION")
+        try:
+            #update the master folder table
+            cursor.execute("UPDATE folders SET name = ?, path = ? WHERE path = ?", (new_name, new_path, old_path))
+            
+            #find all tags that belong to images inside this folder and update their paths
+            #use SQLite REPLACE function to swap the base directory
+            cursor.execute("""
+                UPDATE tags 
+                SET image_path = REPLACE(image_path, ?, ?) 
+                WHERE image_path LIKE ?
+            """, (old_path, new_path, old_path + '%'))
+            
+            self.conn.commit()
+        except Exception as e:
+            self.conn.rollback()
+            print(f"Failed to rename folder in DB: {e}")        
+    #Replace all images existing tags for new ones
+    def update_image_tags(self, image_path, new_tags_list):
+        
+        cursor = self.conn.cursor()
+        self.conn.execute("BEGIN TRANSACTION")
+        try:
+            #remove the old tags for this specific image
+            cursor.execute("DELETE FROM tags WHERE image_path = ?", (image_path,))
+            
+            #insert the new ones
+            for tag in new_tags_list:
+                cursor.execute("INSERT INTO tags (image_path, tag) VALUES (?, ?)", (image_path, tag))
+                
+            self.conn.commit()
+        except Exception as e:
+            self.conn.rollback()
+            print(f"Failed to update tags in DB: {e}")        

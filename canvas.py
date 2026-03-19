@@ -252,10 +252,10 @@ class DropCanvas(QFrame):
         #welcome screen with instructions
         self.welcome_screen = QLabel(
             "Welcome to your Reference Vault!\n\n"
-            "📁 Drag & Drop folders or web images here.\n"
-            "🔍 Search for images using tags globally at the top.\n"
-            "🖱️ Double-click any image to view it full size.\n"
-            "🖱️ Right-click images or folders for more options."
+            "📁 Drag & Drop folders here to build your library.\n"
+            "🔍 Search globally using the bar at the top.\n"
+            "🖱️ Right-click folders to rename them, or images to edit their tags.\n"
+            "🖼️ Double-click any image to view it full size."
         )
         self.welcome_screen.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.welcome_screen.setStyleSheet("color: #888888; font-size: 18px;")
