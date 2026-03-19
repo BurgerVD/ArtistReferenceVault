@@ -2,7 +2,7 @@
 
 ![Version](https://img.shields.io/badge/version-1.0.2-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
-
+![License](https://img.shields.io/badge/license-Copyright-red)
 
 Reference Vault is a fast, multithreaded desktop application designed specifically for digital artists to manage massive reference libraries. It uses local, on-device AI to automatically analyze and tag thousands of images in the background, allowing for instant global search without relying on cloud APIs or paid subscriptions.
 
