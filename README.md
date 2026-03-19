@@ -1,45 +1,55 @@
-# 🖼️ Reference Vault v1.0
+# 🗃️ Reference Vault
 
-A high-performance desktop tool for digital artists to keep their inspiration organized and accessible. **Reference Vault** doesn't just store images; it uses AI to "see" your references, making your entire library searchable in seconds.
+![Version](https://img.shields.io/badge/version-1.0.2-blue.svg)
+![Python](https://img.shields.io/badge/python-3.10%2B-blue)
+![License](https://img.shields.io/badge/license-Copyright-red)
 
-## ✨ What it does
+Reference Vault is a fast, multithreaded desktop application designed specifically for digital artists to manage massive reference libraries. It uses local, on-device AI to automatically analyze and tag thousands of images in the background, allowing for instant global search without relying on cloud APIs or paid subscriptions.
 
-- **AI Auto-Tagging**: Automatically analyzes images in the background and assigns descriptive tags (e.g., "blue eyes," "sword," "cyberpunk").
-- **Global Search**: Instantly find images across your entire vault using the search bar with predictive autocomplete.
-- **Thumbnail Cache**: High-speed MD5-based caching allows folders with thousands of 4K images to load instantly.
-- **Double-Click Lightbox**: View your references at full resolution in a borderless, immersive overlay.
-- **Seamless Workflow**: Drag-and-drop folders or web images into the app, and drag them out directly into Photoshop, PureRef, or Blender.
-- **Smart Deletion**: Choose between removing a reference from the app or permanently deleting the file from your PC.
+<div align="center">
+  <img src="https://github.com/user-attachments/assets/e4868e2a-f6aa-4d2e-976d-17b180b1962b" width="400" height="400" />
+</div>
 
-## 📦 Requirements
+## ✨ Key Features
 
-- **Python 3.10+**
-- **PyQt6** (GUI)
-- **ONNX Runtime** (AI Engine)
-- **NumPy < 2.0**
+* **🧠 Local AI Auto-Tagging:** Powered by the WD14 ONNX neural network, the vault automatically scans and tags your images locally. Zero cloud tracking, zero API costs.
+* **⚡ Asynchronous Architecture:** Built with Python `QThread` workers. The app handles heavy machine learning inference and OS-level file operations in the background, ensuring the main UI never drops a frame.
+* **📂 Smart Hierarchical Trees:** Drop complex, nested folder structures into the app, and it will automatically map and render them as an interactive tree-view sidebar.
+* **🔍 Global Instant Search:** An SQLite-backed database allows you to search for concepts (e.g., "sword", "dynamic pose", "blue lighting") and instantly pull matching references from across your entire hard drive.
+* **🔄 Live UI Tracking:** Real-time visual feedback for the AI queue, background image caching, and automatic GitHub release update checks.
 
-## 🛠️ Installation
+## 🛠️ Under the Hood (Technical Architecture)
 
-1. **Clone or Download** this repository.
-2. **Install Dependencies**:
+This application was engineered to handle large-scale datasets (70,000+ images) efficiently on standard consumer hardware.
+
+* **Frontend:** Built with `PyQt6` for a modular, object-oriented, and highly responsive native desktop interface.
+* **Inference Engine:** Utilizes `onnxruntime` for CPU-optimized machine learning inference. The AI worker thread is strictly governed by custom OpenMP thread caps and micro-sleep cycle yielding to prevent OS-level UI locking.
+* **Data Management:** Implements `SQLite3` for lightweight, ACID-compliant tag storage and rapid localized querying.
+* **Concurrency:** Features a multi-threaded producer-consumer pipeline. Background crawlers locate untagged files and feed them into a thread-safe `queue.Queue()`, which is processed asynchronously by the AI worker.
+
+## 📥 Installation (For Artists)
+
+1. Go to the [Releases Page](../../releases/latest).
+2. Download the latest `ReferenceVault_Setup.exe`.
+3. Run the installer and launch the app.
+4. Drag and drop your master reference folder into the canvas to start tagging!
+*(Note: Windows SmartScreen may flag the installer as it is currently an unsigned indie application. Click **More info -> Run anyway**).*
+
+## 💻 Building from Source (For Developers)
+
+If you want to fork this project or build the executable yourself:
+
+1. Clone the repository:
    ```bash
+   git clone [https://github.com/ShaheerVD/ArtistReferenceVault.git](https://github.com/ShaheerVD/ArtistReferenceVault.git)
+2. Create a virtual environment and install dependencies
+    ```bash
+   python -m venv venv
+   venv\Scripts\activate
    pip install -r requirements.txt
-   ```
-
-## 🚀 How to use
-
-1. Launch: Run python main.py.
-
-2. Import: Drag any folder of images (or a link from Pinterest/Google) into the main window.
-
-3. Tagging: Give the AI a moment to "warm up"—it will begin tagging your images in the background.
-
-4. Search: Use the top bar to filter by tags. As you type, the app will suggest tags that exist in your library.
-
-5. View: Double-click any thumbnail to see the full-res version. Click anywhere to close it.
-
-6. Drag Out: Select one or multiple images and drag them into your painting software
-
-## 🛡️ Privacy & Performance
-
-Everything happens locally on your machine. Your images are never uploaded to a cloud, and the AI tagging engine runs on your CPU, ensuring it doesn't interfere with your GPU while you're painting or rendering.
+3. Run the application locally:
+   ```bash
+   python main.py
+4.Build using PyInstaller:
+  ```bash
+  pyinstaller --name "ReferenceVault" --windowed --onedir --icon="app_icon.ico" --hidden-import=sqlite3 --hidden-import=PIL --collect-all onnxruntime main.py
