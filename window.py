@@ -160,6 +160,8 @@ class ReferenceVault(QMainWindow):
         self.db_commit_timer.timeout.connect(self.process_tag_buffer)
         self.db_commit_timer.start(2000) # Tick every 2 seconds
         
+        self.ai_engine.engine_loaded.connect(self.on_ai_loaded)
+        self.ai_engine.engine_unloaded.connect(self.on_ai_unloaded)
         self.ai_engine.tags_generated.connect(self.save_generated_tags)
        
         self.ai_engine.engine_ready.connect(self.on_ai_ready)
@@ -657,15 +659,26 @@ class ReferenceVault(QMainWindow):
         )        
         
     def update_ai_status(self, count):
-        #Updates the sidebar to show how many images the AI has left to tag.
         if count > 0:
             self.ai_status_label.setText(f"⚙️ Auto Tagging: {count} left")
-            # Turn it yellow to show it's busy working
-            self.ai_status_label.setStyleSheet("color: #f1c40f; padding: 10px; font-weight: bold; background-color: #273746; border-radius: 5px;")
+            self.ai_status_label.setStyleSheet(
+            "color: #f1c40f; padding: 10px; font-weight: bold; background-color: #273746; border-radius: 5px;"
+        )
         else:
-            self.ai_status_label.setText("🤖 Auto Tagger: Ready")
-            # Turn it green to show it's done
-            self.ai_status_label.setStyleSheet("color: #2ecc71; padding: 10px; font-weight: bold; background-color: #273746; border-radius: 5px;")    
+        # ONLY show ready if model is actually loaded
+            if self.ai_engine.session is not None:
+                self.ai_status_label.setText("🤖 Auto Tagger: Ready")
+                self.ai_status_label.setStyleSheet(
+                "color: #2ecc71; padding: 10px; font-weight: bold; background-color: #273746; border-radius: 5px;"
+            )
+            else:
+                self.ai_status_label.setText("💤 Auto Tagger: Unloaded (VRAM freed)")
+                self.ai_status_label.setStyleSheet(
+                "color: #95a5a6; padding: 10px; font-weight: bold; background-color: #273746; border-radius: 5px;"
+            )   
+    
+    
+    
     
      #Displays a popup when a new GitHub release is found.
     def show_update_dialog(self, latest_version, release_url):
@@ -838,3 +851,17 @@ class ReferenceVault(QMainWindow):
                     self.canvas.load_images_from_path(self.current_folder_path)
             else:
                 QMessageBox.information(self, "Empty", "No valid images found in this folder.")
+    
+    
+    def on_ai_loaded(self):
+    # Only update if NOT actively tagging
+        if self.ai_engine.inbox.qsize() == 0:
+            self.ai_status_label.setText("🤖 Auto Tagger: Ready")
+            self.ai_status_label.setStyleSheet(
+            "color: #2ecc71; padding: 10px; font-weight: bold; background-color: #273746; border-radius: 5px;")
+
+
+    def on_ai_unloaded(self):
+        self.ai_status_label.setText("💤 Auto Tagger: Unloaded (VRAM freed)")
+        self.ai_status_label.setStyleSheet(
+        "color: #95a5a6; padding: 10px; font-weight: bold; background-color: #273746; border-radius: 5px;")            
