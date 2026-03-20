@@ -200,6 +200,9 @@ class ReferenceVault(QMainWindow):
         self.folder_list.itemClicked.connect(self.on_sidebar_folder_clicked)
         sidebar_layout.addWidget(self.folder_list)
         
+        self.folder_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.folder_list.customContextMenuRequested.connect(self.on_folder_context_menu)
+        
         #Show ai status on UI
         self.ai_status_label = QLabel("🤖 Auto Tagger: Sleeping")
         self.ai_status_label.setStyleSheet("color: #2ecc71; padding: 10px; font-weight: bold; background-color: #273746; border-radius: 5px;")
@@ -340,88 +343,66 @@ class ReferenceVault(QMainWindow):
                     break
                 iterator += 1
      
-    def contextMenuEvent(self,event:QContextMenuEvent): # type: ignore
-        pos = self.folder_list.viewport().mapFromGlobal(event.globalPos()) #type: ignore
+    def on_folder_context_menu(self, pos):
         item = self.folder_list.itemAt(pos)
         
         menu = QMenu(self)
         menu.setStyleSheet("background-color: #34495e;color:white;padding:5px;")
         
-        #always allow creating a new folder
         add_action = menu.addAction("+ New Folder") 
-        menu.addSeparator() #type:ignore
+        menu.addSeparator() 
         
-        #initialize variables so the linter knows they exist
         rename_action = None
         remove_ref_action = None
         delete_perm_action = None
         
-        #show delete if right click on folder
-        remove_ref_action=None
-        delete_perm_action = None
-        
         if item is not None:
-            self.folder_list.setCurrentItem(item) #select the item that was right-clicked
-
-            
-            #rename button
+            self.folder_list.setCurrentItem(item)
             rename_action = menu.addAction("Rename Folder")
             menu.addSeparator()
-            
             remove_ref_action = menu.addAction("Remove Folder from Vault (Keep Files)")
             delete_perm_action = menu.addAction("Delete Folder Permanently from PC")
+            
+        action = menu.exec(self.folder_list.viewport().mapToGlobal(pos))
         
-        
-        action = menu.exec(event.globalPos())
-        #if the user clicks away from the menu, stop immediately.
         if action is None:
             return
-        #Handle global actions
+            
         if action == add_action:
             if item is not None:
-                #User right-clicked a specific folder, so create it inside that folder as a child
-                target_path = item.data(0, Qt.ItemDataRole.UserRole)
-                self.create_custom_folder(parent_path=target_path)
+                self.create_custom_folder(parent_path=item.data(0, Qt.ItemDataRole.UserRole))
             else:
-                #user right-clicked empty space, create the new folder at the root
                 self.create_custom_folder()
-            
-            
-          #Handle item-specific actions  
-        elif item is not None: 
-          if action==rename_action:  
-            old_path = item.data(0, Qt.ItemDataRole.UserRole)
-            old_name = item.text(0)
-            
-            new_name, ok = QInputDialog.getText(self, "Rename Folder", "Enter new folder name:", text=old_name)
-            if ok and new_name.strip() and new_name != old_name:
-                new_name = new_name.strip()
-                parent_dir = os.path.dirname(old_path)
-                new_path = os.path.join(parent_dir, new_name)
                 
-                try:
-                    # Rename on the actual Windows OS
-                    os.rename(old_path, new_path)
-                    # Safely update the Database
-                    self.db.rename_folder(old_path, new_path, new_name)
-                    
-                    self.current_folder_path = new_path
-                    self.refresh_sidebar()
-                    self.canvas.load_images_from_path(new_path)
-                except Exception as e:
-                    QMessageBox.critical(self, "Error", f"Could not rename folder. It might be open in another program.\n\n{e}")
-            
-        elif remove_ref_action and action == remove_ref_action:
-            self.remove_folder(item, permanent=False)    
-        elif delete_perm_action and action == delete_perm_action:
-            self.remove_folder(item, permanent=True)   
+        elif item is not None: 
+            if action == rename_action:  
+                old_path = item.data(0, Qt.ItemDataRole.UserRole)
+                old_name = item.text(0)
+                new_name, ok = QInputDialog.getText(self, "Rename Folder", "Enter new folder name:", text=old_name)
+                if ok and new_name.strip() and new_name != old_name:
+                    new_name = new_name.strip()
+                    parent_dir = os.path.dirname(old_path)
+                    new_path = os.path.join(parent_dir, new_name)
+                    try:
+                        os.rename(old_path, new_path)
+                        self.db.rename_folder(old_path, new_path, new_name)
+                        self.current_folder_path = new_path
+                        self.refresh_sidebar()
+                        self.canvas.load_images_from_path(new_path)
+                    except Exception as e:
+                        QMessageBox.critical(self, "Error", f"Could not rename folder.\n\n{e}")
+                        
+            elif action == remove_ref_action:
+                self.remove_folder(item, permanent=False)    
+            elif action == delete_perm_action:
+                self.remove_folder(item, permanent=True)   
         
     
     
     
      
     def remove_folder(self, item,permanent=False):
-        path = item.data(0,Qt.ItemDataRole.UserRole)
+        path = item.data(0, Qt.ItemDataRole.UserRole)
         #warning for permanent folder deletion
         if permanent:
             
@@ -447,10 +428,11 @@ class ReferenceVault(QMainWindow):
         #Only invoke shutil if permanent is true
         if permanent:
             try:
+                import shutil
                 shutil.rmtree(path)
             except Exception as e:
-                print(f"Failed to permanently delete folder: {e}")
-        #self.refresh_sidebar()
+                QMessageBox.critical(self, "Error", f"Could not delete folder from hard drive. It might be open in another program.\n\n{e}")
+        self.refresh_sidebar()
     
     
      #sidebar with visual heirarchy   
@@ -684,22 +666,93 @@ class ReferenceVault(QMainWindow):
             #Opens the users default web browser (Chrome/Edge/etc) to the download page
             QDesktopServices.openUrl(QUrl(release_url))         
     #spawns a right-click menu when clicking an image in the grid      
+    #spawns a right-click menu when clicking an image in the grid      
     def on_image_context_menu(self, pos):
-        
         item = self.canvas.grid.itemAt(pos)
         if item is None:
             return
 
+        # Handle multi-selection: if they right-click an unselected item, select only that item
+        if not item.isSelected():
+            self.canvas.grid.clearSelection()
+            item.setSelected(True)
+            
+        selected_items = self.canvas.grid.selectedItems()
+        selected_count = len(selected_items)
+
         menu = QMenu(self)
         menu.setStyleSheet("background-color: #34495e; color: white; padding: 5px;")
         
-        edit_tags_action = menu.addAction("Edit Tags")
-        
+        # Only show "Edit Tags" if a single image is selected
+        edit_tags_action = None
+        if selected_count == 1:
+            edit_tags_action = menu.addAction("Edit Tags")
+            menu.addSeparator()
+            
+        remove_ref_action = menu.addAction(f"Remove {selected_count} Reference(s) from Vault")
+        delete_perm_action = menu.addAction(f"Delete {selected_count} File(s) Permanently from PC")
+
         #spawn the menu exactly where the mouse is
         action = menu.exec(self.canvas.grid.viewport().mapToGlobal(pos)) #type:ignore
         
-        if action == edit_tags_action:
+        if edit_tags_action and action == edit_tags_action:
             self.edit_image_tags(item)
+        elif action == remove_ref_action:
+            self.delete_selected_images(selected_items, permanent=False)
+        elif action == delete_perm_action:
+            self.delete_selected_images(selected_items, permanent=True)
+
+
+    def delete_selected_images(self, items_to_delete, permanent=False):
+        if permanent:
+            reply = QMessageBox.question(
+                self,
+                "Delete Images",
+                f"Are you sure you want to PERMANENTLY delete {len(items_to_delete)} file(s) from your hard drive?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+        #Setup a safe "Eviction" folder in the user's Documents for soft-deleted files
+        removed_dir = os.path.join(str(Path.home()), "Documents", "ReferenceVault_Removed")
+        if not permanent:
+            os.makedirs(removed_dir, exist_ok=True)
+        # Iterate backwards so removing items from the UI doesn't shift the index
+        for item in reversed(items_to_delete):
+            image_path = item.data(Qt.ItemDataRole.UserRole)
+            
+            #Delete from Database
+            try:
+                self.db.delete_image(image_path) 
+            except AttributeError:
+                print("Warning: delete_image method missing in database.py")
+                
+            #Delete from Windows Hard Drive
+            if permanent:
+                try:
+                    os.remove(image_path)
+                except Exception as e:
+                    print(f"Error permanently deleting file {image_path}: {e}")
+            else:
+                #MOVE the file completely out of the monitored Vault folder
+                try:
+                    filename = os.path.basename(image_path)
+                    dest_path = os.path.join(removed_dir, filename)
+                    
+                    #If user already removed a file with this exact name, add a random string so it doesn't overwrite
+                    if os.path.exists(dest_path):
+                        import uuid
+                        name, ext = os.path.splitext(filename)
+                        dest_path = os.path.join(removed_dir, f"{name}_{uuid.uuid4().hex[:6]}{ext}")
+                    
+                    shutil.move(image_path, dest_path)
+                except Exception as e:
+                    print(f"Error moving file out of vault {image_path}: {e}")
+                    
+            #Delete from UI visually
+            row = self.canvas.grid.row(item)
+            self.canvas.grid.takeItem(row)
 
     def edit_image_tags(self, item):
         """Pulls current tags, lets the user edit them, and saves to DB."""

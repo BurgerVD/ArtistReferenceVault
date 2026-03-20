@@ -1,5 +1,5 @@
 #local database
-
+import os
 import sqlite3
 
 class DatabaseManager:
@@ -56,11 +56,23 @@ class DatabaseManager:
         #return tuples of (name, path) for all folders in the database
         return cursor.fetchall()
     
-    def delete_folder(self,path):
+    def delete_folder(self, path):
         cursor = self.conn.cursor()
-        #Delete the folder from the database based on the unique path
-        cursor.execute("DELETE FROM folders WHERE path = ?", (path,))
-        self.conn.commit()
+        try:
+            #Catch both slash types so Windows/Mac normalization doesn't break the query
+            wild_forward = f"{path}/%"
+            wild_back = f"{path}\\%"
+            
+            #Delete the main folder and ALL nested subfolders
+            cursor.execute("DELETE FROM folders WHERE path = ? OR path LIKE ? OR path LIKE ?", (path, wild_forward, wild_back))
+            
+            #Delete ALL AI tags for images that lived inside those folders
+            cursor.execute("DELETE FROM tags WHERE image_path LIKE ? OR image_path LIKE ?", (wild_forward, wild_back))
+            
+            self.conn.commit()
+        except Exception as e:
+            self.conn.rollback()
+            print(f"Failed to delete folder from DB: {e}")
         
     def search_images_by_tag(self,folder_path,search_term):
         cursor = self.conn.cursor()
@@ -101,12 +113,11 @@ class DatabaseManager:
         return [row[0] for row in cursor.fetchall()]   
     
     #save hundreds of tags in a single operation instead of one by one
-    def batch_add_tags(self,tag_data_list):
+    def batch_add_tags(self, tag_data_list):
         cursor = self.conn.cursor()
         if not tag_data_list:
             return
         
-        self.conn.execute("BEGIN TRANSACTION")
         try:
             for image_path, tags in tag_data_list:
                 for tag in tags:
@@ -118,37 +129,50 @@ class DatabaseManager:
     
     def rename_folder(self, old_path, new_path, new_name):
         cursor = self.conn.cursor()
-        self.conn.execute("BEGIN TRANSACTION")
         try:
-            #update the master folder table
+            #Update the parent folder's exact name and path
             cursor.execute("UPDATE folders SET name = ?, path = ? WHERE path = ?", (new_name, new_path, old_path))
             
-            #find all tags that belong to images inside this folder and update their paths
-            #use SQLite REPLACE function to swap the base directory
-            cursor.execute("""
-                UPDATE tags 
-                SET image_path = REPLACE(image_path, ?, ?) 
-                WHERE image_path LIKE ?
-            """, (old_path, new_path, old_path + '%'))
+            #Safely swap the base paths for all nested subfolders and tags using BOTH slash types
+            old_base_f = f"{old_path}/"
+            new_base_f = f"{new_path}/"
+            old_base_b = f"{old_path}\\"
+            new_base_b = f"{new_path}\\"
+            
+            #Subfolders (Forward slash & Backslash)
+            cursor.execute("UPDATE folders SET path = REPLACE(path, ?, ?) WHERE path LIKE ?", (old_base_f, new_base_f, old_base_f + '%'))
+            cursor.execute("UPDATE folders SET path = REPLACE(path, ?, ?) WHERE path LIKE ?", (old_base_b, new_base_b, old_base_b + '%'))
+            
+            #Tags (Forward slash & Backslash)
+            cursor.execute("UPDATE tags SET image_path = REPLACE(image_path, ?, ?) WHERE image_path LIKE ?", (old_base_f, new_base_f, old_base_f + '%'))
+            cursor.execute("UPDATE tags SET image_path = REPLACE(image_path, ?, ?) WHERE image_path LIKE ?", (old_base_b, new_base_b, old_base_b + '%'))
             
             self.conn.commit()
         except Exception as e:
             self.conn.rollback()
-            print(f"Failed to rename folder in DB: {e}")        
+            print(f"Failed to rename folder in DB: {e}")
     #Replace all images existing tags for new ones
     def update_image_tags(self, image_path, new_tags_list):
-        
         cursor = self.conn.cursor()
-        self.conn.execute("BEGIN TRANSACTION")
         try:
-            #remove the old tags for this specific image
+            # remove the old tags for this specific image
             cursor.execute("DELETE FROM tags WHERE image_path = ?", (image_path,))
             
-            #insert the new ones
+            # insert the new ones
             for tag in new_tags_list:
                 cursor.execute("INSERT INTO tags (image_path, tag) VALUES (?, ?)", (image_path, tag))
                 
             self.conn.commit()
         except Exception as e:
             self.conn.rollback()
-            print(f"Failed to update tags in DB: {e}")        
+            print(f"Failed to update tags in DB: {e}")   
+    
+    def delete_image(self, image_path):
+        cursor = self.conn.cursor()
+        try:
+            #wipe all tags associated with this specific file
+            cursor.execute("DELETE FROM tags WHERE image_path = ?", (image_path,))
+            self.conn.commit()
+        except Exception as e:
+            self.conn.rollback()
+            print(f"Failed to delete image tags from DB: {e}")
