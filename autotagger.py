@@ -262,7 +262,9 @@ class AITaggerWorker(QThread):
     def queue_image(self, image_path):
         self.inbox.put(image_path)
         self.queue_updated.emit(self.inbox.qsize())
-
+        #Auto-wake the thread if it receives an image while disabled
+        if not self.isRunning():
+            self.start()
     def stop_engine(self):
         self.is_running = False
         self.inbox.put("STOP_ENGINE")

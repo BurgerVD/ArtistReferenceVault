@@ -414,7 +414,8 @@ class ReferenceVault(QMainWindow):
             QTimer.singleShot(500, lambda: self.ai_engine.start(QThread.Priority.NormalPriority))
         else:
             self.ai_status_label.setText("🤖 Tagger Disabled on Startup") 
-    
+            self.toggle_ai_btn.setText("▶️ Load Tagger")
+            self.toggle_ai_btn.setStyleSheet("background-color: #2ecc71; color: white; border-radius: 4px; padding: 8px; font-weight: bold;")
     def toggle_ai_engine(self):
         #Smart toggle that flips between Loading and Unloading the VRAM
         if self.ai_engine.session is not None:
@@ -422,9 +423,16 @@ class ReferenceVault(QMainWindow):
             self.ai_engine.unload_engine()
             self.toggle_ai_btn.setText("▶️ Load Tagger")
             self.toggle_ai_btn.setStyleSheet("background-color: #2ecc71; color: white; border-radius: 4px; padding: 8px; font-weight: bold;")
+        
+        
         else:
             # It's currently unloaded -> Load it
-            self.ai_engine.load_engine()
+            #If the thread was never started (disabled on startup), start it.
+            # The run() function will naturally find the model path and call load_engine()
+            if not self.ai_engine.isRunning():
+                self.ai_engine.start()
+            else:
+                self.ai_engine.load_engine()
             self.toggle_ai_btn.setText("🛑 Unload Tagger")
             self.toggle_ai_btn.setStyleSheet("background-color: #c0392b; color: white; border-radius: 4px; padding: 8px; font-weight: bold;")
             self.on_ai_loaded()
@@ -498,8 +506,8 @@ class ReferenceVault(QMainWindow):
         
         if action is None:
             return
-        if action == retag_action:
-            self.global_retag_vault()    
+        if action == globalretag_action:
+            self.global_retag_vault()   
         if action == add_action:
             if item is not None:
                 self.create_custom_folder(parent_path=item.data(0, Qt.ItemDataRole.UserRole))
@@ -526,7 +534,7 @@ class ReferenceVault(QMainWindow):
              
             elif action == retag_action:
                 folder_path = item.data(0, Qt.ItemDataRole.UserRole)
-                self.retag_folder(folder_path)            
+                self.retag_folder(folder_path)           
             elif action == remove_ref_action:
                 self.remove_folder(item, permanent=False)    
             elif action == delete_perm_action:
@@ -1019,6 +1027,11 @@ class ReferenceVault(QMainWindow):
     
     
     def on_ai_loaded(self):
+        
+        self.toggle_ai_btn.setText("🛑 Unload Tagger")
+        self.toggle_ai_btn.setStyleSheet("background-color: #c0392b; color: white; border-radius: 4px; padding: 8px; font-weight: bold;")
+        
+        
     # Only update if NOT actively tagging
         if self.ai_engine.inbox.qsize() == 0:
             self.ai_status_label.setText("🤖 Auto Tagger: Ready")
@@ -1027,6 +1040,9 @@ class ReferenceVault(QMainWindow):
 
 
     def on_ai_unloaded(self):
+        self.toggle_ai_btn.setText("▶️ Load Tagger")
+        self.toggle_ai_btn.setStyleSheet("background-color: #2ecc71; color: white; border-radius: 4px; padding: 8px; font-weight: bold;")
+        
         self.ai_status_label.setText("💤 Auto Tagger: Unloaded (VRAM freed)")
         self.ai_status_label.setStyleSheet(
         "color: #95a5a6; padding: 10px; font-weight: bold; background-color: #273746; border-radius: 5px;")            
