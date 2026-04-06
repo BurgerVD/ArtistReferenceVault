@@ -5,9 +5,9 @@ import json
 import urllib.request
 from pathlib import Path
 from autotagger import AITaggerWorker
-
+from cache import CacheManager
 #controller for the main canvas area where images are displayed. It also handles drag and drop of folders to add them to the vault.
-from PyQt6.QtWidgets import  QStyle,QDialog,QMessageBox,QCompleter,QInputDialog,QFrame,QMenu,QLineEdit, QHBoxLayout, QListWidgetItem, QMainWindow,QVBoxLayout,QStackedWidget,QLabel,QListWidget, QWidget,QPushButton,QMessageBox,QListView,QTreeWidget,QTreeWidgetItem,QTreeWidgetItemIterator
+from PyQt6.QtWidgets import  QCheckBox,QStyle,QDialog,QMessageBox,QCompleter,QInputDialog,QSplitter,QFrame,QMenu,QLineEdit, QHBoxLayout, QListWidgetItem, QMainWindow,QVBoxLayout,QStackedWidget,QLabel,QListWidget, QWidget,QPushButton,QMessageBox,QListView,QTreeWidget,QTreeWidgetItem,QTreeWidgetItemIterator
 from PyQt6.QtCore import Qt,QThread,pyqtSignal,QTimer,QStringListModel,QUrl
 from canvas import DropCanvas
 from database import DatabaseManager
@@ -126,13 +126,45 @@ class UpdateCheckerThread(QThread):
             #If user have no internet  fail silently so the app still works normally
             print(f"Update check skipped/failed: {e}")
 
-
+#Pop up window
+class SettingsDialog(QDialog):
+    def __init__(self, main_window):
+        super().__init__(main_window)
+        self.main_window = main_window
+        self.setWindowTitle("Preferences")
+        self.setStyleSheet("background-color: #2a2a2a; color: white; font-size: 14px;")
+        self.setFixedSize(300, 150)
+        
+        layout = QVBoxLayout(self)
+        
+        self.load_ai_cb = QCheckBox("Load AI Tagger on Startup")
+        self.load_ai_cb.setChecked(self.main_window.settings.get("load_ai_on_startup", True))
+        layout.addWidget(self.load_ai_cb)
+        
+        self.clear_cache_btn = QPushButton("🗑️ Clear Thumbnail Cache")
+        self.clear_cache_btn.setStyleSheet("background-color: #e67e22; padding: 8px; border-radius: 4px; font-weight: bold;")
+        self.clear_cache_btn.clicked.connect(self.main_window.action_clear_cache)
+        layout.addWidget(self.clear_cache_btn)
+        
+        save_btn = QPushButton("Save & Close")
+        save_btn.setStyleSheet("background-color: #3498db; padding: 8px; border-radius: 4px; font-weight: bold;")
+        save_btn.clicked.connect(self.accept)
+        layout.addWidget(save_btn)
+        
+    def accept(self):
+        #Save the new preference to the main app's memory
+        self.main_window.settings["load_ai_on_startup"] = self.load_ai_cb.isChecked()
+        import json
+        with open(self.main_window.settings_path, "w") as f:
+            json.dump(self.main_window.settings, f)
+        super().accept()
 
 #----------------------------------------------------#
 #this class is the main window of the application. It contains the sidebar and the canvas. It listens for signals from the canvas when a folder is dropped and adds it to the sidebar. It also handles clicks on the sidebar to load the corresponding images in the canvas.
 class ReferenceVault(QMainWindow):
     def __init__(self):
         super().__init__()
+              
         self.setWindowTitle("Reference Vault")
         self.resize(1000,750)
         icon_path=os.path.join(os.getcwd(),"app_icon.ico")
@@ -145,13 +177,23 @@ class ReferenceVault(QMainWindow):
         
         self.db = DatabaseManager() 
         
+        #Settings manager
+        self.settings_path = os.path.join(self.master_vault_path, "vault_settings.json")
+        self.settings = {"load_ai_on_startup": True, "expanded_folders": []}
+        if os.path.exists(self.settings_path):
+            with open(self.settings_path, "r") as f:
+                self.settings.update(json.load(f))
+        
+        
         #update checker
-        self.CURRENT_VERSION = "v1.0.4" 
+        self.CURRENT_VERSION = "v1.1" 
         
         self.update_checker = UpdateCheckerThread(self.CURRENT_VERSION)
         self.update_checker.update_available.connect(self.show_update_dialog)
         self.update_checker.start()
-        #Load the Ai model
+        
+        
+        #Load the Ai model 
         self.ai_engine = AITaggerWorker()
         
         #fix ui freezing
@@ -165,8 +207,6 @@ class ReferenceVault(QMainWindow):
         self.ai_engine.tags_generated.connect(self.save_generated_tags)
        
         self.ai_engine.engine_ready.connect(self.on_ai_ready)
-        
-        QTimer.singleShot(500, lambda: self.ai_engine.start(QThread.Priority.NormalPriority))
         
         
         self.current_folder_path = None #track the currently loaded folder path to avoid reloading if the same folder is clicked again
@@ -182,6 +222,9 @@ class ReferenceVault(QMainWindow):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
         
+        #QSplitter allow user to resize sidebar
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
+        main_layout.addWidget(self.splitter)
         #sidebar for folders and tags
         self.sidebar=QFrame()
         self.sidebar.setFixedWidth(250)
@@ -216,6 +259,8 @@ class ReferenceVault(QMainWindow):
         
         self.folder_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.folder_list.customContextMenuRequested.connect(self.on_folder_context_menu)
+        
+        
         
         #Show ai status on UI
         self.ai_status_label = QLabel("🤖 Auto Tagger: Sleeping")
@@ -319,6 +364,75 @@ class ReferenceVault(QMainWindow):
         folder_paths = [path for name,path in saved_folders] 
         if folder_paths:
             self.start_crawler(folder_paths)
+            
+        #Stack the Search row directly on top of the Canvas
+        right_side_widget = QWidget()
+        right_side_layout = QVBoxLayout(right_side_widget)
+        right_side_layout.setContentsMargins(0,0,0,0)
+        
+        #Cache buttons
+        self.cache_manager = CacheManager() # Initialize Cache
+        #remove white bars
+        self.top_bar = QFrame()
+        self.top_bar.setStyleSheet("background-color: #1e1e1e; border-bottom: 1px solid #3d3d3d;")
+        search_layout = QHBoxLayout(self.top_bar)
+        search_layout.setContentsMargins(10, 10, 10, 10)
+        
+       
+            
+        #AI buttons
+        self.toggle_ai_btn = QPushButton("🛑 Unload Tagger")
+        self.toggle_ai_btn.setStyleSheet("background-color: #c0392b; color: white; border-radius: 4px; padding: 8px;")
+        self.toggle_ai_btn.clicked.connect(self.toggle_ai_engine)
+        
+        # Settings Button (Replaces the standalone cache button)
+        self.settings_btn = QPushButton("⚙️ Settings")
+        self.settings_btn.setStyleSheet("background-color: #2c3e50; color: white; border-radius: 4px; padding: 8px; font-weight: bold;")
+        self.settings_btn.clicked.connect(self.open_settings)
+        
+        search_layout.addWidget(self.search_bar)
+        search_layout.addWidget(self.toggle_ai_btn)
+        search_layout.addWidget(self.settings_btn)
+        search_layout.addWidget(self.help_btn)
+        
+        # Add to the right side layout
+        right_side_widget = QWidget()
+        right_side_widget.setStyleSheet("background-color: #1e1e1e;") # Ensure the whole right panel is dark
+        right_side_layout = QVBoxLayout(right_side_widget)
+        right_side_layout.setContentsMargins(0, 0, 0, 0)
+        right_side_layout.setSpacing(0)
+        
+        right_side_layout.addWidget(self.top_bar)
+        right_side_layout.addWidget(self.canvas)
+        
+        # Add to splitter
+        self.splitter.addWidget(self.sidebar)
+        self.splitter.addWidget(right_side_widget)
+        self.splitter.setSizes([250, 750])
+        
+        if self.settings["load_ai_on_startup"]:
+            QTimer.singleShot(500, lambda: self.ai_engine.start(QThread.Priority.NormalPriority))
+        else:
+            self.ai_status_label.setText("🤖 Tagger Disabled on Startup") 
+    
+    def toggle_ai_engine(self):
+        #Smart toggle that flips between Loading and Unloading the VRAM
+        if self.ai_engine.session is not None:
+            # It's currently loaded -> Unload it
+            self.ai_engine.unload_engine()
+            self.toggle_ai_btn.setText("▶️ Load Tagger")
+            self.toggle_ai_btn.setStyleSheet("background-color: #2ecc71; color: white; border-radius: 4px; padding: 8px; font-weight: bold;")
+        else:
+            # It's currently unloaded -> Load it
+            self.ai_engine.load_engine()
+            self.toggle_ai_btn.setText("🛑 Unload Tagger")
+            self.toggle_ai_btn.setStyleSheet("background-color: #c0392b; color: white; border-radius: 4px; padding: 8px; font-weight: bold;")
+            self.on_ai_loaded()
+
+    def open_settings(self):
+        #Spawns the  Preferences window
+        dialog = SettingsDialog(self)
+        dialog.exec()
     
     #UI FUNCTIONS----------------------------------------------------------------
     #create master reference library folder in documents
@@ -364,6 +478,7 @@ class ReferenceVault(QMainWindow):
         menu.setStyleSheet("background-color: #34495e;color:white;padding:5px;")
         
         add_action = menu.addAction("+ New Folder") 
+        globalretag_action = menu.addAction("Retag All")
         menu.addSeparator() 
         
         rename_action = None
@@ -383,7 +498,8 @@ class ReferenceVault(QMainWindow):
         
         if action is None:
             return
-            
+        if action == retag_action:
+            self.global_retag_vault()    
         if action == add_action:
             if item is not None:
                 self.create_custom_folder(parent_path=item.data(0, Qt.ItemDataRole.UserRole))
@@ -419,7 +535,30 @@ class ReferenceVault(QMainWindow):
     
     
     
-     
+    def global_retag_vault(self):
+        reply = QMessageBox.warning(
+            self,
+            "Global Re-Tag",
+            "Are you sure you want to completely wipe and re-tag EVERY image in your vault?\nThis may take a long time.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            #Wake up AI if disabled
+            if not self.ai_engine.isRunning():
+                self.ai_engine.start()
+                
+            cursor = self.db.conn.cursor()
+            cursor.execute("SELECT image_path FROM tags")
+            all_images = list(set([row[0] for row in cursor.fetchall()]))
+            
+            for path in all_images:
+                if os.path.exists(path):
+                    self.db.delete_image(path) #Wipe old tags
+                    self.ai_engine.queue_image(path) #Re-queue
+                    
+            QMessageBox.information(self, "Re-Tagging Started", f"Sent {len(all_images)} images to the AI queue.") 
+            
     def remove_folder(self, item,permanent=False):
         path = item.data(0, Qt.ItemDataRole.UserRole)
         #warning for permanent folder deletion
@@ -468,9 +607,13 @@ class ReferenceVault(QMainWindow):
             clean_path = os.path.normpath(path)
             parent_path = os.path.dirname(clean_path)
             
-            #create the UI node
+            #Create the UI node
             item = QTreeWidgetItem([name])
             item.setData(0, Qt.ItemDataRole.UserRole, path)
+            item.setToolTip(0, path) #Hover show full path
+            #Remember if this folder was expanded last time UI was used
+            if path in self.settings.get("expanded_folders", []):
+                item.setExpanded(True)
             
             folder_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon) #type:ignore
             item.setIcon(0, folder_icon)
@@ -487,14 +630,27 @@ class ReferenceVault(QMainWindow):
             #keep active folder selected
             if path == self.current_folder_path:
                 self.folder_list.setCurrentItem(item)
+                
+            #Auto-Load Last Folder on Startup
+            if self.current_folder_path is None: 
+                last_folder = self.settings.get("last_folder")
+                if last_folder:
+                    norm_last = os.path.normpath(last_folder)
+                    if norm_last in item_map:
+                        item_to_select = item_map[norm_last]
+                        self.folder_list.setCurrentItem(item_to_select)
+                        self.current_folder_path = last_folder
+                        self.canvas.load_images_from_path(last_folder)    
+                
         #force tree to stay expanded 
-        self.folder_list.expandAll()       
+        #self.folder_list.expandAll() dont override memory
+              
         #on app startup, automatically select the first folder
-        if not self.folder_list.currentItem() and self.folder_list.topLevelItemCount() > 0:
-            first_item = self.folder_list.topLevelItem(0)
-            self.folder_list.setCurrentItem(first_item)
-            self.current_folder_path = first_item.data(0, Qt.ItemDataRole.UserRole) #type:ignore
-            self.canvas.load_images_from_path(self.current_folder_path)
+        #if not self.folder_list.currentItem() and self.folder_list.topLevelItemCount() > 0:
+           # first_item = self.folder_list.topLevelItem(0)
+           # self.folder_list.setCurrentItem(first_item)
+           # self.current_folder_path = first_item.data(0, Qt.ItemDataRole.UserRole) #type:ignore
+          #  self.canvas.load_images_from_path(self.current_folder_path)
     
     #add folder to sidebar when dropped and store full path in item data for later use
     def add_folder_to_sidebar(self, folder_name, full_path):
@@ -523,16 +679,24 @@ class ReferenceVault(QMainWindow):
     
     #shutdown function stops the AI and threads
     def closeEvent(self,event): #type:ignore
-        print("shutting down...")
-        #stop background activity
-        self.canvas.stop_threads()
-        #kill the AI hahaha
-        self.ai_engine.stop_engine()
-        #kill crawler thread
-        if hasattr(self, 'crawler') and self.crawler.isRunning():
-            self.crawler.requestInterruption()
-            self.crawler.wait()
+        print("Saving UI state and shutting down...")
         
+        # Traverse tree to find expanded folders
+        expanded = []
+        iterator = QTreeWidgetItemIterator(self.folder_list)
+        while iterator.value():
+            item = iterator.value()
+            if item is not None and item.isExpanded(): 
+                expanded.append(item.data(0, Qt.ItemDataRole.UserRole))
+            iterator += 1
+            
+        self.settings["expanded_folders"] = expanded
+        self.settings["last_folder"] = self.current_folder_path #save last viewed folder
+        with open(self.settings_path, "w") as f:
+            json.dump(self.settings, f)
+            
+        self.canvas.stop_threads()
+        self.ai_engine.stop_engine()
         event.accept()   
         
     #get the signal and keep it in RAM   
@@ -651,11 +815,12 @@ class ReferenceVault(QMainWindow):
             "Vault Controls & Help",
             "Welcome to Reference Vault!\n\n"
             "• Adding Media: Drag & drop folders from your PC into the main canvas.\n"
-            "• Folder Management: The sidebar matches your PC's folder hierarchy. Right-click any folder to rename it or remove it.\n"
-            "• Auto-Tagging: The AI analyzes your images in the background and assigns searchable tags.\n"
-            "• Manual Tag Editing: Right-click any image in the grid to manually edit or add custom tags.\n"
+            "• Exporting: Drag any image from the grid directly into Photoshop, PureRef, or your desktop.\n"
+            "• Navigation: Hold 'Ctrl' and scroll your mouse wheel to zoom the image grid.\n"
+            "• Folder Management: Right-click any folder to rename, remove, or force a complete AI re-tag.\n"
+            "• Auto-Tagging: The AI analyzes images in the background. Right-click any image to manually edit its tags.\n"
             "• Global Search: Type any tag (like 'sword' or 'dynamic pose') to instantly find matching images.\n"
-            "• Full-Screen View: Double-click any thumbnail to open the high-resolution lightbox."
+            "• Performance: Use the '⚙️ Settings' button to clear your thumbnail cache or disable the AI from booting on startup."
         )        
         
     def update_ai_status(self, count):
@@ -696,7 +861,7 @@ class ReferenceVault(QMainWindow):
             #Opens the users default web browser (Chrome/Edge/etc) to the download page
             QDesktopServices.openUrl(QUrl(release_url))         
     #spawns a right-click menu when clicking an image in the grid      
-    #spawns a right-click menu when clicking an image in the grid      
+          
     def on_image_context_menu(self, pos):
         item = self.canvas.grid.itemAt(pos)
         if item is None:
@@ -786,7 +951,7 @@ class ReferenceVault(QMainWindow):
 
     def edit_image_tags(self, item):
         """Pulls current tags, lets the user edit them, and saves to DB."""
-        image_path = item.data(Qt.ItemDataRole.UserRole) # QListWidget uses 1 arg!
+        image_path = item.data(Qt.ItemDataRole.UserRole)
         
         #get current tags from DB and convert to a comma-separated string
         current_tags = self.db.get_tags_for_image(image_path)
@@ -865,3 +1030,13 @@ class ReferenceVault(QMainWindow):
         self.ai_status_label.setText("💤 Auto Tagger: Unloaded (VRAM freed)")
         self.ai_status_label.setStyleSheet(
         "color: #95a5a6; padding: 10px; font-weight: bold; background-color: #273746; border-radius: 5px;")            
+    #wipe cache
+    def action_clear_cache(self):
+        reply = QMessageBox.question(
+            self, "Clear Cache", 
+            "Are you sure you want to delete all cached thumbnails?\nThis frees disk space, but folders will load slower the next time you open them.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self.cache_manager.clear_cache()
+            QMessageBox.information(self, "Success", "Thumbnail cache cleared.")    

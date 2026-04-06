@@ -24,6 +24,8 @@ class AITaggerWorker(QThread):
     engine_loaded = pyqtSignal()
     engine_unloaded = pyqtSignal()
     
+    
+    
     def __init__(self):
         super().__init__()
 
@@ -36,13 +38,13 @@ class AITaggerWorker(QThread):
 
         self.sess_options = ort.SessionOptions()
 
-        # Idle system 
+        #Idle system 
         self.last_activity = time.time()
-        self.IDLE_TIMEOUT = 120 #2min
-
-    # -----------------------------
-    # ENGINE LIFECYCLE
-    # -----------------------------
+        self.IDLE_TIMEOUT = 60 #1min
+        self.max_tags = 12
+    
+    #ENGINE LIFECYCLE
+    
     def create_session(self, providers):
         return ort.InferenceSession(
             self.model_path,
@@ -105,10 +107,11 @@ class AITaggerWorker(QThread):
 
         return self.session is not None
 
-    # -----------------------------
-    # THREAD ENTRY
-    # -----------------------------
+    
+    #THREAD ENTRY
+    
     def run(self):
+       
         try:
             print("Initializing AI Engine...")
 
@@ -154,8 +157,8 @@ class AITaggerWorker(QThread):
 
             return
 
-        # -----------------------------
-        # MAIN LOOP
+      
+        #MAIN LOOP
         
         while self.is_running:
             image_path = None
@@ -177,7 +180,7 @@ class AITaggerWorker(QThread):
                     print(f"Skipping corrupt file: {image_path}")
                     continue
 
-                # -------- IMAGE PREPROCESSING --------
+                #IMAGE PREPROCESSING
                 image = Image.open(image_path).convert("RGB")
 
                 max_dim = max(image.size)
@@ -193,8 +196,8 @@ class AITaggerWorker(QThread):
                 image_array = image_array[:, :, ::-1]
                 image_array = np.expand_dims(image_array, axis=0)
 
-                # -------- INFERENCE --------
-                # Double safety check
+                #INFERENCE
+                #Double safety check
                 if self.session is None:
                     continue
 
@@ -213,7 +216,7 @@ class AITaggerWorker(QThread):
 
                 generated_tags = [
                     tag.replace('_', ' ')
-                    for _, tag in valid_tags[:4]
+                    for _, tag in valid_tags[:self.max_tags]
                 ]
 
                 if generated_tags:
@@ -243,9 +246,9 @@ class AITaggerWorker(QThread):
                     self.queue_updated.emit(self.inbox.qsize())
                     time.sleep(0.01)
 
-            # -----------------------------
-            # IDLE CHECK
-            # -----------------------------
+          
+            #IDLE CHECK
+           
             if self.session is not None:
                 idle_time = time.time() - self.last_activity
 
@@ -253,9 +256,9 @@ class AITaggerWorker(QThread):
                     print("Idle timeout reached. Unloading model...")
                     self.unload_engine()
 
-    # -----------------------------
-    # PUBLIC API
-    # -----------------------------
+   
+    #API
+   
     def queue_image(self, image_path):
         self.inbox.put(image_path)
         self.queue_updated.emit(self.inbox.qsize())
@@ -264,3 +267,5 @@ class AITaggerWorker(QThread):
         self.is_running = False
         self.inbox.put("STOP_ENGINE")
         self.wait()
+        
+    
