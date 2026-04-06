@@ -3,6 +3,7 @@ import shutil #copy local files
 import urllib.request #download web files
 import uuid #generate unique filename for web images
 import hashlib
+from cache import CacheManager
 from PyQt6 import QtCore
 from PyQt6.QtWidgets import QFrame, QMenu,QListWidgetItem,QVBoxLayout,QStackedWidget,QMessageBox,QLabel,QListWidget,QProgressBar
 from PyQt6.QtCore import QSize, QThread, Qt, pyqtSignal,QUrl,QMimeData
@@ -13,13 +14,13 @@ from PIL import Image
 class ImageLoaderThread(QThread):
     image_loaded=pyqtSignal(str, QImage)
     
-    def __init__(self,target,valid_extensions):
+    def __init__(self,target,valid_extensions,target_size=250):
         super().__init__()
         self.target = target #folder path(str) or list of paths (list)
         self.valid_extensions=valid_extensions
-        #setup cache directory
-        self.cache_dir = os.path.join(os.getcwd(),'.thumb_cache')
-        os.makedirs(self.cache_dir,exist_ok=True)
+        self.target_size = target_size
+        self.cache = CacheManager()
+        
         
         
     def run(self):
@@ -42,43 +43,39 @@ class ImageLoaderThread(QThread):
             #global search list.
             files_to_process = self.target
 
-        #Process all gathered files (with cache)
+       
+        # Process all gathered files (with cache)
         for full_path in files_to_process:
             if self.isInterruptionRequested():
                 return
-                
+            
             ext = os.path.splitext(full_path)[1].lower()
-            #make sure file exists and is larger than 0 bytes before turning into thumbnail
-            if ext in self.valid_extensions and os.path.exists(full_path) and os.path.getsize(full_path)>0:
+            if ext in self.valid_extensions and os.path.exists(full_path) and os.path.getsize(full_path) > 0:
+            
+                #CHECK SQLITE CACHE FIRST
+                cached_qimg = self.cache.get_thumbnail(full_path)
+                if cached_qimg:
+                    self.image_loaded.emit(full_path, cached_qimg)
+                    continue # Skip PIL entirely, move to next image!
                 
-                #verify file is real and not corrupt
+                #IF NOT CACHED, VERIFY & GENERATE
                 try:
                     with Image.open(full_path) as verify_img:
                         verify_img.verify()
-                except Exception:
-                    print(f"Canvas blocked corrupted UI file: {full_path}")
-                    continue #skip the file so QImage doesnt crash
-                
-                
-                
-                #Cache: turn file path into a unique hash
-                path_bytes = full_path.encode('utf-8')
-                path_hash = hashlib.md5(path_bytes).hexdigest()
-                cache_path = os.path.join(self.cache_dir, f"{path_hash}.jpg")
-                
-                #Check if a thumbnail already exists
-                if os.path.exists(cache_path):
-                    img = QImage(cache_path)
-                    if not img.isNull():
-                        self.image_loaded.emit(full_path, img)
-                else:
-                    #Not in cache: load original image, scale it, and SAVE it to cache
+                        
+                    #Load original image
                     img = QImage(full_path)
                     if not img.isNull():
-                        scaled_img = img.scaled(150, 150, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-                        scaled_img.save(cache_path, "JPG", 85) #save it
+                        scaled_img = img.scaled(500, 500, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                        
+                        #SAVE TO SQLITE BLOB CACHE
+                        self.cache.save_thumbnail(full_path, scaled_img)
                         self.image_loaded.emit(full_path, scaled_img)
-       
+                        
+                except Exception:
+                    print(f"Canvas blocked corrupted UI file: {full_path}")
+                    continue
+        
            
 
 #thread to handle image downloads from web(Pinterest,etc)
@@ -220,8 +217,29 @@ class ReferenceGrid(QListWidget):
                         os.remove(path)
                     except Exception as e:
                         print(f"Error deleting file {path}: {e}")
+        #Allow user to ctrl +scroll wheel zoom in and out
+        def wheelEvent(self,event):    #type:ignore
+            #if holding ctrl, let scroll wheel zoom instead of scroll
+            if event.modifiers() == Qt.KeyboardModifier.ControlModifier:
                 
+                #Percentage-based scaling (10% per tick) for smooth zooming
+                zoom_factor = 1.1 if event.angleDelta().y() > 0 else 0.9
+                current_size = self.iconSize().width()
                 
+                new_size = int(current_size * zoom_factor)
+                new_size = max(50, min(800, new_size))
+                
+                #Update both the image size AND the grid size holding it
+                self.setIconSize(QtCore.QSize(new_size, new_size))
+                
+                #set the grid size,  make it slightly larger than the image
+                #to create a clean padding between the thumbnails
+                self.setGridSize(QtCore.QSize(new_size + 15, new_size + 15)) 
+                
+                event.accept()
+            else:
+                # Normal vertical scrolling
+                super().wheelEvent(event)
 #this class handles the drag and drop of folders onto the canvas and displays the image grid. It emits a signal when a folder is dropped so the main window can add it to the sidebar. It also has a method to load images from a given folder path and display them as thumbnails in the grid.
 
 class DropCanvas(QFrame):
@@ -265,7 +283,8 @@ class DropCanvas(QFrame):
             "Welcome to your Reference Vault!\n\n"
             "📁 Drag & Drop folders here to build your library.\n"
             "🔍 Search globally using the bar at the top.\n"
-            "🖱️ Right-click folders to rename them, or images to edit their tags.\n"
+            "🖱️ Hold 'Ctrl' + Scroll Wheel to zoom in and out of the grid.\n"
+            "📤 Drag images from the grid directly into Photoshop or your canvas.\n"
             "🖼️ Double-click any image to view it full size."
         )
         self.welcome_screen.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -426,7 +445,7 @@ class DropCanvas(QFrame):
     def add_single_thumbnail(self,image_path):
         img=QImage(image_path)
         if not img.isNull():
-            scaled_img = img.scaled(150,150,Qt.AspectRatioMode.KeepAspectRatio,Qt.TransformationMode.SmoothTransformation)
+            scaled_img = img.scaled(500,500,Qt.AspectRatioMode.KeepAspectRatio,Qt.TransformationMode.SmoothTransformation)
             self.add_thumbnail_from_thread(image_path,scaled_img)
     
                 
