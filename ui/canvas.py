@@ -7,7 +7,7 @@ from core.cache import CacheManager
 from PyQt6 import QtCore
 from PyQt6.QtWidgets import QFrame, QMenu,QListWidgetItem,QVBoxLayout,QStackedWidget,QMessageBox,QLabel,QListWidget,QProgressBar
 from PyQt6.QtCore import QSize, QThread, Qt, pyqtSignal,QUrl,QMimeData
-from PyQt6.QtGui import QImage, QMouseEvent, QPixmap,QDrag,QIcon,QContextMenuEvent
+from PyQt6.QtGui import QImage, QMouseEvent, QPixmap,QDrag,QIcon,QContextMenuEvent,QPainter,QColor
 from PIL import Image
 #multi threading to stop UI freezing when loading large folders
 
@@ -24,54 +24,86 @@ class ImageLoaderThread(QThread):
         
         
     def run(self):
-        #get files based on what type of target is received
         files_to_process = []
         
         if isinstance(self.target, str): 
-            #Stop if folder dont exist
-            if not os.path.exists(self.target):
-                return
-            #if folder then only scan the top level, ignore subfolders
+            if not os.path.exists(self.target): return
             try:
                 for item_name in os.listdir(self.target):
                     full_path = os.path.join(self.target, item_name)
-                    #check if it is a file (not a folder) before adding it to the grid
                     if os.path.isfile(full_path):
                         files_to_process.append(full_path)
             except Exception as e:
                 print(f"Error reading folder contents: {e}")
                     
         elif isinstance(self.target, list):
-           
-            #global search list.
             files_to_process = self.target
 
-       
-        # Process all gathered files (with cache)
         for full_path in files_to_process:
-            if self.isInterruptionRequested():
-                return
+            if self.isInterruptionRequested(): return
             
             ext = os.path.splitext(full_path)[1].lower()
             if ext in self.valid_extensions and os.path.exists(full_path) and os.path.getsize(full_path) > 0:
             
-                #CHECK SQLITE CACHE FIRST
                 cached_qimg = self.cache.get_thumbnail(full_path)
                 if cached_qimg:
                     self.image_loaded.emit(full_path, cached_qimg)
-                    continue # Skip PIL entirely, move to next image!
+                    continue 
                 
-                #IF NOT CACHED, VERIFY & GENERATE
+                #OpenCV Video Frame Extraction
+                video_exts = ['.mp4', '.webm', '.avi', '.mkv']
+                if ext in video_exts:
+                    qimg = None
+                    try:
+                        import cv2 # pyright: ignore[reportMissingImports] #Import locally to avoid crashing if user lacks module
+                        cap = cv2.VideoCapture(full_path)
+                        if cap.isOpened():
+                            # Grab a frame at the 15% mark to skip black intro screens
+                            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                            target_frame = int(total_frames * 0.15) if total_frames > 0 else 0
+                            cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
+                            
+                            ret, frame = cap.read()
+                            if ret:
+                                #Convert OpenCV BGR to Qt RGB
+                                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                                h, w, ch = frame.shape
+                                bytes_per_line = ch * w
+                                
+                                # so C++ doesn't garbage collect the memory
+                                temp_qimg = QImage(frame.data, w, h, bytes_per_line, QImage.Format.Format_RGB888).copy()
+                                qimg = temp_qimg.scaled(500, 500, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                        cap.release()
+                    except ImportError:
+                        print("OpenCV missing. Run 'pip install opencv-python' for video thumbnails.")
+                    except Exception as e:
+                        print(f"Video extraction failed: {e}")
+                        
+                    #Fallback if cv2 fails or isn't installed
+                    if qimg is None:
+                        qimg = QImage(250, 250, QImage.Format.Format_RGB32)
+                        qimg.fill(QColor("#2c3e50")) 
+                        painter = QPainter(qimg)
+                        painter.setPen(QColor("#ffffff"))
+                        font = painter.font()
+                        font.setPointSize(14)
+                        font.setBold(True)
+                        painter.setFont(font)
+                        painter.drawText(qimg.rect(), Qt.AlignmentFlag.AlignCenter, f"🎬 VIDEO\n{ext.upper()}")
+                        painter.end()
+
+                    self.cache.save_thumbnail(full_path, qimg)
+                    self.image_loaded.emit(full_path, qimg)
+                    continue
+
+                #Standard Image Fallback
                 try:
                     with Image.open(full_path) as verify_img:
                         verify_img.verify()
                         
-                    #Load original image
                     img = QImage(full_path)
                     if not img.isNull():
                         scaled_img = img.scaled(500, 500, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-                        
-                        #SAVE TO SQLITE BLOB CACHE
                         self.cache.save_thumbnail(full_path, scaled_img)
                         self.image_loaded.emit(full_path, scaled_img)
                         

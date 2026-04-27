@@ -22,10 +22,10 @@ class BackgroundCrawlerThread(QThread):
     
     def __init__(self,folders_to_scan,db_manager):
         super().__init__()
-        # Filter out deleted folders before scanning
-        self.folders_to_scan = [f for f in folders_to_scan if os.path.exists(f)]
+        self.folders_to_scan = folders_to_scan
         self.db = db_manager
-        self.valid_extensions = ['.jpg', '.jpeg', '.png', '.bmp', '.webp', '.mp4', '.webm', '.gif']
+        # V2.2 FIX: Only scan extensions the AI can actually process!
+        self.ai_compatible_extensions = ['.jpg', '.jpeg', '.png', '.bmp', '.webp']
     
     def run(self):
         print(f"Fast-Sync started scanning {len(self.folders_to_scan)} folder(s)...")
@@ -38,12 +38,14 @@ class BackgroundCrawlerThread(QThread):
         #Gather all current files from the OS
         os_current_files = set()
         for folder_path in self.folders_to_scan:
+            if not os.path.exists(folder_path): continue # Safety check
             for root, dirs, files in os.walk(folder_path):
                 for file in files:
                     if self.isInterruptionRequested(): return
                     
                     ext = os.path.splitext(file)[1].lower()
-                    if ext in self.valid_extensions:
+                    # Only add AI-compatible formats to the tagging queue
+                    if ext in self.ai_compatible_extensions:
                         full_path = os.path.join(root, file)
                         os_current_files.add(full_path)
                         
@@ -677,6 +679,9 @@ class ReferenceVault(QMainWindow):
                     elif data.get("type") == "smart" and "query" in data:
                         expanded_paths.add(data["query"])
             iterator += 1
+        #Save scroll position
+        v_scrollbar = self.folder_list.verticalScrollBar()
+        scroll_pos = v_scrollbar.value() if v_scrollbar else 0
             
         self.folder_list.clear()
         
@@ -722,17 +727,30 @@ class ReferenceVault(QMainWindow):
             item_map[clean_path] = item
             
         #Restore expanded state
+        item_to_select = None
         restore_iterator = QTreeWidgetItemIterator(self.folder_list)
         while restore_iterator.value():
             tree_item = restore_iterator.value()
             if tree_item:
                 data = tree_item.data(0, Qt.ItemDataRole.UserRole)
                 if isinstance(data, dict):
+                    # Restore expansion
                     if data.get("type") == "physical" and data.get("path") in expanded_paths:
                         tree_item.setExpanded(True)
                     elif data.get("type") == "smart" and data.get("query") in expanded_paths:
                         tree_item.setExpanded(True)
+                    
+                    #Restore selection highlight visually
+                    if data.get("path") == self.current_folder_path:
+                        item_to_select = tree_item
             restore_iterator += 1
+            
+        if item_to_select:
+            self.folder_list.setCurrentItem(item_to_select)
+            
+        #Restore exact scroll position
+        if v_scrollbar:
+            v_scrollbar.setValue(scroll_pos)
     
     #add folder to sidebar when dropped and store full path in item data for later use
     def add_folder_to_sidebar(self, folder_name, full_path):
@@ -902,9 +920,13 @@ class ReferenceVault(QMainWindow):
         image_path = item.data(Qt.ItemDataRole.UserRole)
         
         if image_path and os.path.exists(image_path):
-            #spawn viewer
-            viewer =AdvancedLightbox(parent_grid=self.canvas.grid, starting_item=item, parent=self)
-            viewer.exec()        
+            #Close old lightbox if one is already open
+            if hasattr(self, 'lightbox') and self.lightbox:
+                self.lightbox.close()
+            
+            #Spawn non-modally and keep a reference so it doesn't get garbage collected
+            self.lightbox =AdvancedLightbox(parent_grid=self.canvas.grid, starting_item=item, parent=self)
+            self.lightbox.show()       
     
     def show_help(self):
         QMessageBox.information(

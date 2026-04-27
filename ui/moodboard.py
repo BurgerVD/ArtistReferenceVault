@@ -1,9 +1,9 @@
 import os
 import json
 from PyQt6.QtWidgets import (QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, 
-                             QWidget, QVBoxLayout, QPushButton, QHBoxLayout, QLabel, QMenu, QFileDialog)
-from PyQt6.QtCore import Qt, QPoint, QRect
-from PyQt6.QtGui import QPixmap, QPainter, QMouseEvent, QWheelEvent, QTransform
+                             QWidget, QVBoxLayout, QPushButton, QHBoxLayout, QLabel, QMenu, QFileDialog, QMessageBox, QSlider, QStyle)
+from PyQt6.QtCore import Qt, QPoint, QRect, QRectF, QPointF
+from PyQt6.QtGui import QPixmap, QPainter, QMouseEvent, QWheelEvent, QTransform, QPen, QColor, QBrush
 
 class MovableImage(QGraphicsPixmapItem):
     def __init__(self, image_path):
@@ -15,15 +15,94 @@ class MovableImage(QGraphicsPixmapItem):
             if pixmap.width() > 2000 or pixmap.height() > 2000:
                 pixmap = pixmap.scaled(2000, 2000, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
             self.setPixmap(pixmap)
-        else:
-            print(f"Warning: Could not render {image_path}")
         
         self.setFlag(QGraphicsPixmapItem.GraphicsItemFlag.ItemIsMovable)
         self.setFlag(QGraphicsPixmapItem.GraphicsItemFlag.ItemIsSelectable)
         self.setFlag(QGraphicsPixmapItem.GraphicsItemFlag.ItemSendsGeometryChanges)
+        self.setAcceptHoverEvents(True)
+        
+        self._is_resizing = False
+        self._resize_start_scale = 1.0
+        self._resize_start_pos = QPointF()
 
+    def paint(self, painter, option, widget=None): # type: ignore
+       
+        if option is None or painter is None: 
+            return
+            
+        option.state &= ~QStyle.StateFlag.State_Selected
+        super().paint(painter, option, widget)
+        
+        if self.isSelected():
+            current_scale = self.scale()
+            pen = QPen(QColor("#3498db"), max(2.0, 4.0 / current_scale))
+            painter.setPen(pen)
+            painter.drawRect(self.boundingRect())
+            
+            size = max(10.0, 20.0 / current_scale)
+            rect = self.boundingRect()
+            painter.setBrush(QColor("#3498db"))
+            painter.drawRect(QRectF(rect.right() - size, rect.bottom() - size, size, size))
+
+    def hoverMoveEvent(self, event): # type: ignore
+        if event is None: return
+        if self.isSelected():
+            size = max(10.0, 20.0 / self.scale())
+            rect = self.boundingRect()
+            if event.pos().x() >= rect.right() - size and event.pos().y() >= rect.bottom() - size:
+                self.setCursor(Qt.CursorShape.SizeFDiagCursor)
+            else:
+                self.setCursor(Qt.CursorShape.ArrowCursor)
+        else:
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+        super().hoverMoveEvent(event)
+
+    def mousePressEvent(self, event): # type: ignore
+        if event is None: return
+        if self.cursor().shape() == Qt.CursorShape.SizeFDiagCursor and event.button() == Qt.MouseButton.LeftButton:
+            self._is_resizing = True
+            self._resize_start_scale = self.scale()
+            self._resize_start_pos = event.scenePos()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event): # type: ignore
+        if event is None: return
+        if self._is_resizing:
+            delta = event.scenePos().x() - self._resize_start_pos.x()
+            scale_change = delta / (self.boundingRect().width() * self._resize_start_scale)
+            new_scale = max(0.05, self._resize_start_scale + scale_change)
+            self.setScale(new_scale)
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event): # type: ignore
+        if event is None: return
+        if self._is_resizing:
+            self._is_resizing = False
+            event.accept()
+            self._mark_parent_dirty()
+            return
+            
+        super().mouseReleaseEvent(event)
+        self._mark_parent_dirty()
+
+    def _mark_parent_dirty(self):
+        
+        scene = self.scene()
+        if scene is None: return
+        
+        views = scene.views()
+        if not views: return
+        
+        view = views[0]
+        if hasattr(view, 'safe_parent') and getattr(view, 'safe_parent'): 
+            getattr(view, 'safe_parent').mark_dirty()
+            
 class InfiniteBoard(QGraphicsView):
-    def __init__(self,safe_parent=None):
+    def __init__(self, safe_parent=None):
         super().__init__()
         self.safe_parent = safe_parent
         self.board_scene = QGraphicsScene(self)
@@ -50,8 +129,34 @@ class InfiniteBoard(QGraphicsView):
         item.setZValue(z)
         item.setScale(scale)
         self.board_scene.addItem(item)
+        if self.safe_parent: self.safe_parent.mark_dirty()
 
-    #Right Click Context Menu ---
+    def auto_arrange_grid(self):
+        items = self.board_scene.selectedItems()
+        if not items: 
+            items = self.board_scene.items()
+            
+        if not items: return
+        
+        # Simple grid packing math
+        x_offset, y_offset, max_row_height = 0.0, 0.0, 0.0
+        grid_width_limit = 2000.0 # Wrap images after this width
+        
+        for item in reversed(items): # Items usually return back-to-front
+            if isinstance(item, MovableImage):
+                item.setPos(x_offset, y_offset)
+                bounds = item.sceneBoundingRect()
+                
+                x_offset += bounds.width() + 20.0
+                max_row_height = max(max_row_height, bounds.height())
+                
+                if x_offset > grid_width_limit:
+                    x_offset = 0.0
+                    y_offset += max_row_height + 20.0
+                    max_row_height = 0.0
+                    
+        if self.safe_parent: self.safe_parent.mark_dirty()
+
     def contextMenuEvent(self, event): # type: ignore
         if event is None: return
         item = self.itemAt(event.pos())
@@ -68,42 +173,43 @@ class InfiniteBoard(QGraphicsView):
             action = menu.exec(event.globalPos())
             if action == remove_action:
                 self.board_scene.removeItem(item)
+                if self.safe_parent: self.safe_parent.mark_dirty()
             elif action == bring_front:
                 item.setZValue(item.zValue() + 1)
+                if self.safe_parent: self.safe_parent.mark_dirty()
             elif action == send_back:
                 item.setZValue(item.zValue() - 1)
-                
+                if self.safe_parent: self.safe_parent.mark_dirty()
         else:
+            arrange_action = menu.addAction("🗐 Auto-Arrange Images")
+            menu.addSeparator()
             save_action = menu.addAction("💾 Save Moodboard")
             load_action = menu.addAction("📂 Load Moodboard")
             menu.addSeparator()
             clear_action = menu.addAction("🗑️ Clear Board")
             
             action = menu.exec(event.globalPos())
-            if self.safe_parent: # Safely call functions using the reference
-                if action == save_action:
-                    self.safe_parent.save_board()
-                elif action == load_action:
-                    self.safe_parent.load_board()
+            
+            if action == arrange_action:
+                self.auto_arrange_grid()
+            elif self.safe_parent:
+                if action == save_action: self.safe_parent.save_board()
+                elif action == load_action: self.safe_parent.load_board()
             if action == clear_action:
                 self.board_scene.clear()
+                if self.safe_parent: self.safe_parent.mark_dirty()
 
-    #Drag & Camera Controls ---
     def dragEnterEvent(self, event): # type: ignore
         if event is None: return
         mime_data = event.mimeData()
-        if mime_data and mime_data.hasUrls():
-            event.acceptProposedAction()
-        else:
-            super().dragEnterEvent(event)
+        if mime_data and mime_data.hasUrls(): event.acceptProposedAction()
+        else: super().dragEnterEvent(event)
 
     def dragMoveEvent(self, event): # type: ignore
         if event is None: return
         mime_data = event.mimeData()
-        if mime_data and mime_data.hasUrls():
-            event.acceptProposedAction()
-        else:
-            super().dragMoveEvent(event)
+        if mime_data and mime_data.hasUrls(): event.acceptProposedAction()
+        else: super().dragMoveEvent(event)
 
     def dropEvent(self, event): # type: ignore
         if event is None: return
@@ -126,6 +232,7 @@ class InfiniteBoard(QGraphicsView):
         if event.key() == Qt.Key.Key_Delete or event.key() == Qt.Key.Key_Backspace:
             for item in self.board_scene.selectedItems():
                 self.board_scene.removeItem(item)
+            if self.safe_parent: self.safe_parent.mark_dirty()
         super().keyPressEvent(event)
 
     def wheelEvent(self, event): # type: ignore
@@ -178,6 +285,11 @@ class PureRefOverlay(QWidget):
         self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         
+        self.current_filepath = None
+        self.is_dirty = False
+        self.is_pinned_top = True
+        self.is_locked = False # UX FIX: Window Locking
+        
         self.main_layout = QVBoxLayout(self)
         self.main_layout.setContentsMargins(4, 4, 4, 4) 
         self.main_layout.setSpacing(0)
@@ -189,19 +301,45 @@ class PureRefOverlay(QWidget):
         h_layout = QHBoxLayout(self.header)
         h_layout.setContentsMargins(10, 0, 10, 0)
         
-        title = QLabel("Reference Vault - Moodboard")
-        title.setStyleSheet("color: #aaaaaa; font-weight: bold; font-size: 12px;")
-        h_layout.addWidget(title)
+        self.title_label = QLabel()
+        self.title_label.setStyleSheet("color: #aaaaaa; font-weight: bold; font-size: 12px;")
+        self.update_title()
+        h_layout.addWidget(self.title_label)
         h_layout.addStretch()
         
-        # Minimize Button
+        # UX FIX: Window Opacity Slider
+        opacity_label = QLabel("👁️")
+        opacity_label.setStyleSheet("color: white; font-size: 14px;")
+        h_layout.addWidget(opacity_label)
+        
+        self.opacity_slider = QSlider(Qt.Orientation.Horizontal)
+        self.opacity_slider.setRange(10, 100)
+        self.opacity_slider.setValue(100)
+        self.opacity_slider.setFixedWidth(80)
+        self.opacity_slider.setStyleSheet("QSlider::groove:horizontal { border: 1px solid #333; height: 4px; background: #2a2a2a; border-radius: 2px; } QSlider::handle:horizontal { background: #3498db; width: 10px; margin: -3px 0; border-radius: 5px; }")
+        self.opacity_slider.valueChanged.connect(lambda v: self.setWindowOpacity(v / 100.0))
+        h_layout.addWidget(self.opacity_slider)
+        h_layout.addSpacing(10)
+        
+        # UX FIX: Lock Position Toggle
+        self.lock_btn = QPushButton("🔓")
+        self.lock_btn.setFixedSize(24, 24)
+        self.lock_btn.setStyleSheet("QPushButton { color: white; border: none; font-size: 14px; } QPushButton:hover { background-color: #555; border-radius: 12px; }")
+        self.lock_btn.clicked.connect(self.toggle_lock)
+        h_layout.addWidget(self.lock_btn)
+
+        self.pin_btn = QPushButton("📌 Pin Top")
+        self.pin_btn.setFixedSize(60, 20)
+        self.pin_btn.setStyleSheet("QPushButton { background-color: #3498db; color: white; border: none; font-weight: bold; border-radius: 4px; font-size: 10px; }")
+        self.pin_btn.clicked.connect(self.toggle_pin_top)
+        h_layout.addWidget(self.pin_btn)
+        
         min_btn = QPushButton("—")
         min_btn.setFixedSize(24, 24)
         min_btn.setStyleSheet("QPushButton { color: white; border: none; font-weight: bold; border-radius: 12px; } QPushButton:hover { background-color: #f1c40f; }")
         min_btn.clicked.connect(self.showMinimized)
         h_layout.addWidget(min_btn)
         
-        # Close Button
         close_btn = QPushButton("✕")
         close_btn.setFixedSize(24, 24)
         close_btn.setStyleSheet("QPushButton { color: white; border: none; font-weight: bold; border-radius: 12px; } QPushButton:hover { background-color: #e74c3c; }")
@@ -209,7 +347,6 @@ class PureRefOverlay(QWidget):
         h_layout.addWidget(close_btn)
         
         self.board = InfiniteBoard(safe_parent=self)
-        
         self.main_layout.addWidget(self.header)
         self.main_layout.addWidget(self.board)
         self.resize(800, 600)
@@ -220,10 +357,38 @@ class PureRefOverlay(QWidget):
         self.setMouseTracking(True)
         self.header.setMouseTracking(True)
 
-    # Save / Load Logic 
+    # --- Header Actions ---
+    def toggle_lock(self):
+        self.is_locked = not self.is_locked
+        self.lock_btn.setText("🔒" if self.is_locked else "🔓")
+        # Visual feedback: Turn borders dark if locked
+        if self.is_locked:
+            self.setStyleSheet("background-color: rgba(15, 15, 15, 0.95); border: 2px solid #e74c3c;")
+        else:
+            self.setStyleSheet("background-color: rgba(30, 30, 30, 0.98); border: none;")
+
+    def update_title(self):
+        name = os.path.basename(self.current_filepath) if self.current_filepath else "Untitled"
+        dirty_star = "*" if self.is_dirty else ""
+        self.title_label.setText(f"Reference Vault - [{name}]{dirty_star}")
+
+    def mark_dirty(self):
+        if not self.is_dirty:
+            self.is_dirty = True
+            self.update_title()
+
+    def toggle_pin_top(self):
+        self.is_pinned_top = not self.is_pinned_top
+        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, self.is_pinned_top)
+        self.pin_btn.setStyleSheet(f"QPushButton {{ background-color: {'#3498db' if self.is_pinned_top else '#555555'}; color: white; border: none; font-weight: bold; border-radius: 4px; font-size: 10px; }}")
+        self.show()
+
     def save_board(self):
-        file_path, _ = QFileDialog.getSaveFileName(self, "Save Moodboard", "", "Vault Board (*.rvboard);;JSON (*.json)")
-        if not file_path: return
+        file_path = self.current_filepath
+        if not file_path:
+            file_path, _ = QFileDialog.getSaveFileName(self, "Save Moodboard", "", "Vault Board (*.rvboard);;JSON (*.json)")
+        
+        if not file_path: return False
         
         data = []
         for item in self.board.board_scene.items():
@@ -235,14 +400,25 @@ class PureRefOverlay(QWidget):
                     "z": item.zValue(),
                     "scale": item.scale()
                 })
-                
         try:
             with open(file_path, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=4)
+            self.current_filepath = file_path
+            self.is_dirty = False
+            self.update_title()
+            return True
         except Exception as e:
-            print(f"Failed to save board: {e}")
+            QMessageBox.critical(self, "Error", f"Failed to save board:\n{e}")
+            return False
 
     def load_board(self):
+        if self.is_dirty:
+            reply = QMessageBox.question(self, "Unsaved Changes", "You have unsaved changes. Do you want to save before loading a new board?",
+                                         QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel)
+            if reply == QMessageBox.StandardButton.Save:
+                if not self.save_board(): return
+            elif reply == QMessageBox.StandardButton.Cancel: return
+
         file_path, _ = QFileDialog.getOpenFileName(self, "Load Moodboard", "", "Vault Board (*.rvboard);;JSON (*.json)")
         if not file_path: return
         
@@ -250,8 +426,7 @@ class PureRefOverlay(QWidget):
             with open(file_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 
-            self.board.board_scene.clear() # Wipe current board
-            
+            self.board.board_scene.clear()
             for obj in data:
                 self.board.add_image(
                     image_path=obj.get("path"),
@@ -260,10 +435,27 @@ class PureRefOverlay(QWidget):
                     z=obj.get("z", 0.0),
                     scale=obj.get("scale", 1.0)
                 )
+            self.current_filepath = file_path
+            self.is_dirty = False
+            self.update_title()
         except Exception as e:
-            print(f"Failed to load board: {e}")
+            QMessageBox.critical(self, "Error", f"Failed to load board:\n{e}")
 
-    #Frameless Resizing
+    def closeEvent(self, event): # type: ignore
+        if event is None: return
+        if self.is_dirty:
+            reply = QMessageBox.question(self, "Unsaved Changes", "Save changes to your moodboard before closing?",
+                                         QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel)
+            if reply == QMessageBox.StandardButton.Save:
+                if not self.save_board():
+                    event.ignore()
+                    return
+            elif reply == QMessageBox.StandardButton.Cancel:
+                event.ignore()
+                return
+        event.accept()
+
+    # --- Locked Frameless Resizing ---
     def get_resize_edge(self, pos: QPoint):
         rect = self.rect()
         x, y = pos.x(), pos.y()
@@ -289,6 +481,11 @@ class PureRefOverlay(QWidget):
 
     def mousePressEvent(self, event): # type: ignore
         if event is None: return
+        # UX FIX: Prevent window moving/resizing if Padlock is locked
+        if self.is_locked:
+            super().mousePressEvent(event)
+            return
+            
         if event.button() == Qt.MouseButton.LeftButton:
             edge = self.get_resize_edge(event.position().toPoint())
             if edge:
@@ -305,11 +502,17 @@ class PureRefOverlay(QWidget):
 
     def mouseMoveEvent(self, event): # type: ignore
         if event is None: return
+        if self.is_locked:
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+            super().mouseMoveEvent(event)
+            return
+            
         if event.buttons() == Qt.MouseButton.NoButton:
             edge = self.get_resize_edge(event.position().toPoint())
             self.set_cursor_for_edge(edge)
             super().mouseMoveEvent(event)
             return
+            
         if event.buttons() == Qt.MouseButton.LeftButton and self._resize_edge:
             global_pos = event.globalPosition().toPoint()
             rect = self.geometry()
@@ -320,10 +523,12 @@ class PureRefOverlay(QWidget):
             self.setGeometry(rect)
             event.accept()
             return
+            
         if event.buttons() == Qt.MouseButton.LeftButton and self._drag_pos and not self._resize_edge:
             self.move(event.globalPosition().toPoint() - self._drag_pos)
             event.accept()
             return
+            
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event): # type: ignore

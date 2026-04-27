@@ -171,6 +171,12 @@ class AITaggerWorker(QThread):
 
                 self.last_activity = time.time()
 
+                #Skip videos and non-static images so PIL doesn't crash
+                ext = os.path.splitext(image_path)[1].lower()
+                if ext not in ['.jpg', '.jpeg', '.png', '.bmp', '.webp']:
+                    print(f"Skipping AI tagging for video format: {os.path.basename(image_path)}")
+                    continue
+                
                 #Ensure model is loaded BEFORE doing anything
                 if not self.ensure_session():
                     print("Model unavailable. Skipping image.")
