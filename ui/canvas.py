@@ -286,12 +286,13 @@ class DropCanvas(QFrame):
         
         #welcome screen with instructions
         self.welcome_screen = QLabel(
-            "Welcome to Reference Vault!\n\n"
+            "Welcome to Reference Vault v2!\n\n"
             "📁 Drag & Drop folders here to build your library.\n"
-            "🔍 Search dynamically using inclusions/exclusions (e.g., 'girl -sword').\n"
+            "🔍 Search dynamically using AI tags (e.g., 'girl -sword').\n"
+            "⏱️ Use 'Gesture Practice' for timed drawing sessions.\n"
+            "🎨 Right-click images to pin them to the Infinite Moodboard.\n"
             "🎞️ Drop MP4s or GIFs to analyze animation frame-by-frame.\n"
-            "🎨 Right-click images to pin them to your Infinite Moodboard.\n"
-            "✂️ Double-click an image to extract palettes, check values, or crop details."
+            "⚙️ Check Settings to pre-cache your library for instant loading."
         )
         self.welcome_screen.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.welcome_screen.setStyleSheet("color: #888888; font-size: 18px;")

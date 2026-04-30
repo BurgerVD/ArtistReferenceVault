@@ -4,7 +4,12 @@ import sys
 
 class DatabaseManager:
     def __init__(self, db_path="vault.db"):
-        self.conn = sqlite3.connect(db_path, check_same_thread=False)
+        # Add a 10-second timeout to allow threads to wait in line rather than instantly crashing
+        self.conn = sqlite3.connect(db_path, check_same_thread=False, timeout=10.0)
+        
+        # Activate Write-Ahead Logging
+        self.conn.execute("PRAGMA journal_mode=WAL;")
+        
         self.create_tables()
         
     def create_tables(self):

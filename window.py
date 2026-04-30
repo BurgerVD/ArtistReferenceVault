@@ -134,9 +134,21 @@ class SettingsDialog(QDialog):
         self.main_window = main_window
         self.setWindowTitle("Preferences")
         self.setStyleSheet("background-color: #2a2a2a; color: white; font-size: 14px;")
-        self.setFixedSize(300, 150)
+        self.setFixedSize(350, 220)
+        
         
         layout = QVBoxLayout(self)
+        
+        self.auto_tag_cb = QCheckBox("Auto-Tag Images on Import")
+        self.auto_tag_cb.setChecked(self.main_window.settings.get("auto_tag_import", True))
+        self.auto_tag_cb.toggled.connect(self.save_settings)
+        layout.addWidget(self.auto_tag_cb)
+
+        self.cache_all_btn = QPushButton("⚡ Cache All Vault Images")
+        self.cache_all_btn.setStyleSheet("background-color: #8e44ad; padding: 8px; border-radius: 4px; font-weight: bold;")
+        self.cache_all_btn.clicked.connect(self.main_window.action_cache_all)
+        layout.addWidget(self.cache_all_btn)
+        
         
         self.load_ai_cb = QCheckBox("Load AI Tagger on Startup")
         #Load the current saved setting
@@ -159,6 +171,7 @@ class SettingsDialog(QDialog):
     def save_settings(self):
         #Save the new preference to the main app's memory and JSON file instantly
         self.main_window.settings["load_ai_on_startup"] = self.load_ai_cb.isChecked()
+        self.main_window.settings["auto_tag_import"] = self.auto_tag_cb.isChecked()
         try:
             with open(self.main_window.settings_path, "w") as f:
                 json.dump(self.main_window.settings, f, indent=4)
@@ -173,6 +186,26 @@ class SettingsDialog(QDialog):
     def accept(self):
         self.save_settings()
         super().accept()
+
+
+class VaultTreeWidget(QTreeWidget):
+    folder_moved = pyqtSignal(object, object)
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        
+    def dropEvent(self, event): # type: ignore
+        if event is None: return
+        dragged_items = self.selectedItems()
+        target_item = self.itemAt(event.position().toPoint())
+        
+        if dragged_items and target_item:
+            self.folder_moved.emit(dragged_items[0], target_item)
+            
+       
+        event.ignore()
+
+
 
 #----------------------------------------------------#
 #this class is the main window of the application. It contains the sidebar and the canvas. It listens for signals from the canvas when a folder is dropped and adds it to the sidebar. It also handles clicks on the sidebar to load the corresponding images in the canvas.
@@ -208,7 +241,7 @@ class ReferenceVault(QMainWindow):
         self.cache_manager = CacheManager()
         #Settings manager
         self.settings_path = os.path.join(self.master_vault_path, "vault_settings.json")
-        self.settings = {"load_ai_on_startup": True, "expanded_folders": []}
+        self.settings = {"load_ai_on_startup": True, "expanded_folders": [], "auto_tag_import": True}
         if os.path.exists(self.settings_path):
             with open(self.settings_path, "r") as f:
                 self.settings.update(json.load(f))
@@ -263,6 +296,31 @@ class ReferenceVault(QMainWindow):
         self.toggle_ai_btn = QPushButton("🛑 Unload Tagger")
         self.toggle_ai_btn.setStyleSheet("background-color: #c0392b; color: white; border-radius: 4px; padding: 8px;")
         self.toggle_ai_btn.clicked.connect(self.toggle_ai_engine)
+        self.ai_controls_layout = QHBoxLayout()
+        #START IN "RESUME" STATE (Green) because the engine starts paused
+        self.pause_ai_btn = QPushButton("▶ Resume Queue")
+        self.pause_ai_btn.setStyleSheet("""
+            QPushButton { background-color: #2ecc71; color: white; border-radius: 4px; padding: 5px; }
+            QPushButton:disabled { background-color: #555555; color: #888888; }
+        """)
+        self.pause_ai_btn.clicked.connect(self.toggle_ai_pause)
+        self.pause_ai_btn.setEnabled(False) # Start disabled
+        
+        
+        
+        self.stop_ai_btn = QPushButton("⏹ Clear Queue")
+        self.stop_ai_btn.setStyleSheet("""
+            QPushButton { background-color: #e74c3c; color: white; border-radius: 4px; padding: 5px; }
+            QPushButton:disabled { background-color: #555555; color: #888888; }
+        """)
+        self.stop_ai_btn.clicked.connect(self.ai_engine.clear_queue)
+        self.stop_ai_btn.setEnabled(False) # Start disabled
+        
+        self.ai_controls_layout.addWidget(self.pause_ai_btn)
+        self.ai_controls_layout.addWidget(self.stop_ai_btn)
+        sidebar_layout.addLayout(self.ai_controls_layout)
+        
+        
         
         # Settings Button 
         self.settings_btn = QPushButton("⚙️ Settings")
@@ -273,12 +331,14 @@ class ReferenceVault(QMainWindow):
         
         
         #collapsible Tree Sidebar
-        self.folder_list = QTreeWidget()
+       # self.folder_list = QTreeWidget()
+        self.folder_list = VaultTreeWidget()
         self.folder_list.setHeaderHidden(True)
         self.folder_list.setDragEnabled(True)
         self.folder_list.setAcceptDrops(True)
         self.folder_list.setDropIndicatorShown(True)
         self.folder_list.setDragDropMode(QTreeWidget.DragDropMode.InternalMove)
+        self.folder_list.folder_moved.connect(self.handle_folder_move)
         
         self.folder_list.setStyleSheet("""
             QTreeWidget {
@@ -316,7 +376,7 @@ class ReferenceVault(QMainWindow):
         self.canvas.folder_dropped.connect(self.add_folder_to_sidebar)
         
         #When Canvas announces a new Image, put it into the Ai's queue
-        self.canvas.image_added.connect(self.ai_engine.queue_image)
+        self.canvas.image_added.connect(self.handle_new_image)
         
         #catch distress signal and trigger a popup
         self.canvas.needs_new_folder.connect(self.create_custom_folder)
@@ -382,12 +442,19 @@ class ReferenceVault(QMainWindow):
         """)
         self.help_btn.clicked.connect(self.show_help)
 
-        #CLEAN TOP BAR LAYOUT
+        #TOP BAR LAYOUT
         self.top_bar = QFrame()
         self.top_bar.setStyleSheet("background-color: #1e1e1e; border-bottom: 1px solid #3d3d3d;")
         top_bar_layout = QHBoxLayout(self.top_bar)
         top_bar_layout.setContentsMargins(10, 10, 10, 10)
 
+        #Gesture mode button
+        self.gesture_btn = QPushButton("⏱️ Gesture Practice")
+        self.gesture_btn.setStyleSheet("background-color: #e67e22; color: white; border-radius: 4px; padding: 8px; font-weight: bold;")
+        self.gesture_btn.clicked.connect(self.start_gesture_mode)
+        top_bar_layout.addWidget(self.gesture_btn)
+        
+        
         #Moodboard Button
         self.moodboard = PureRefOverlay(self)
         self.moodboard.hide()
@@ -666,19 +733,33 @@ class ReferenceVault(QMainWindow):
      #sidebar with visual heirarchy   
     def refresh_sidebar(self):
         
-        # Memorize currently expanded folders
         expanded_paths = set()
-        iterator = QTreeWidgetItemIterator(self.folder_list)
-        while iterator.value():
-            tree_item = iterator.value()
-            if tree_item and tree_item.isExpanded():
-                data = tree_item.data(0, Qt.ItemDataRole.UserRole)
+        
+        # If this is the first load (empty tree), load from settings
+        if self.folder_list.topLevelItemCount() == 0:
+            saved_folders = self.settings.get("expanded_folders", [])
+            for data in saved_folders:
                 if isinstance(data, dict):
                     if data.get("type") == "physical" and "path" in data:
                         expanded_paths.add(data["path"])
                     elif data.get("type") == "smart" and "query" in data:
                         expanded_paths.add(data["query"])
-            iterator += 1
+                elif isinstance(data, str): 
+                    # Fallback just in case older V1 settings are still in the JSON
+                    expanded_paths.add(data)
+        else:
+            # Otherwise, save current state before refreshing
+            iterator = QTreeWidgetItemIterator(self.folder_list)
+            while iterator.value():
+                tree_item = iterator.value()
+                if tree_item and tree_item.isExpanded():
+                    data = tree_item.data(0, Qt.ItemDataRole.UserRole)
+                    if isinstance(data, dict):
+                        if data.get("type") == "physical" and "path" in data:
+                            expanded_paths.add(data["path"])
+                        elif data.get("type") == "smart" and "query" in data:
+                            expanded_paths.add(data["query"])
+                iterator += 1
         #Save scroll position
         v_scrollbar = self.folder_list.verticalScrollBar()
         scroll_pos = v_scrollbar.value() if v_scrollbar else 0
@@ -706,25 +787,39 @@ class ReferenceVault(QMainWindow):
         self.folder_list.addTopLevelItem(phys_header)
         
         saved_folders = self.db.get_folders()
-        saved_folders.sort(key=lambda x: os.path.normpath(x[1]))
         item_map = {}
+        custom_hierarchy = self.settings.get("custom_hierarchy", {})
         
+        # Pass 1: Create all visual items and map them by their clean path
         for name, path in saved_folders:
             clean_path = os.path.normpath(path)
-            parent_path = os.path.dirname(clean_path)
             
             item = QTreeWidgetItem([name])
             item.setData(0, Qt.ItemDataRole.UserRole, {"type": "physical", "path": path})
             item.setToolTip(0, path)
             item.setIcon(0, self.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon)) #type:ignore
             
-            if parent_path in item_map:
-                parent_item = item_map[parent_path]
-                parent_item.addChild(item)
-            else:
-                phys_header.addChild(item)
-                
             item_map[clean_path] = item
+            
+        # Pass 2: Connect parents and children using the visual overrides
+        for name, path in saved_folders:
+            clean_path = os.path.normpath(path)
+            item = item_map[clean_path]
+            
+            # Check if user dragged this folder manually, otherwise fallback to true OS parent
+            if path in custom_hierarchy:
+                parent_key = custom_hierarchy[path]
+            else:
+                parent_key = os.path.dirname(clean_path)
+                
+            # Attach the visual item to its respective parent
+            if parent_key == "root":
+                phys_header.addChild(item)
+            elif parent_key in item_map:
+                item_map[parent_key].addChild(item)
+            else:
+                # Fallback to the top level if the parent folder was deleted from DB
+                phys_header.addChild(item)
             
         #Restore expanded state
         item_to_select = None
@@ -767,6 +862,53 @@ class ReferenceVault(QMainWindow):
         
         #Tell crawler to scan the newly dropped folder
         self.start_crawler([full_path])
+    
+    
+    def handle_folder_move(self, dragged_item, target_item):
+        import json
+        
+        drag_data = dragged_item.data(0, Qt.ItemDataRole.UserRole)
+        target_data = target_item.data(0, Qt.ItemDataRole.UserRole)
+        
+        # Ensure we are only moving physical folders
+        if not isinstance(drag_data, dict) or drag_data.get("type") != "physical":
+            return 
+            
+        drag_path = drag_data.get("path")
+        
+        # Type Guard: Fixes Pylance Unknown | None errors
+        if not drag_path or not isinstance(drag_path, str): 
+            return
+        
+        # Determine the visual target
+        if isinstance(target_data, dict) and target_data.get("type") == "physical":
+            target_path = target_data.get("path")
+            if not target_path or not isinstance(target_path, str): return
+            target_key = os.path.normpath(target_path)
+        elif target_item.text(0) == "Local Vault":
+            target_key = "root"
+        else:
+            return 
+            
+        # Initialize dictionary if it doesn't exist yet
+        if "custom_hierarchy" not in self.settings:
+            self.settings["custom_hierarchy"] = {}
+            
+        # Prevent dragging into itself
+        if os.path.normpath(drag_path) == target_key:
+            return
+
+        # Save the visual override
+        self.settings["custom_hierarchy"][drag_path] = target_key
+        
+        # Save to disk so it persists reboots
+        try:
+            with open(self.settings_path, "w") as f:
+                json.dump(self.settings, f)
+        except Exception as e:
+            print(f"Failed to save visual layout: {e}")
+            
+        self.refresh_sidebar()
        
     #when a folder is clicked in the sidebar, load its images in the canvas
     def on_sidebar_folder_clicked(self, item):
@@ -932,41 +1074,65 @@ class ReferenceVault(QMainWindow):
         QMessageBox.information(
             self,
             "Vault Controls & Help",
-            "Welcome to Reference Vault!\n\n"
-            "🔍 SEARCH ENGINE:\n"
+            "Welcome to Reference Vault v2!\n\n"
+            "🔍 SEARCH ENGINE & AI:\n"
             "• Use '+' or '-' to include/exclude tags (e.g., 'sword -blood').\n"
-            "• Click the '+' icon next to physical folders to create Smart Collections based on searches.\n\n"
+            "• Auto-Tagger queues images in the background. Use the top-left buttons to Pause/Clear the queue.\n\n"
+            "📂 LIBRARY MANAGEMENT:\n"
+            "• Drag & Drop folders inside the sidebar to visually organize them (does not move OS files).\n"
+            "• Right-click folders to Re-tag, Rename, or create Smart Collections.\n\n"
             "🎞️ ADVANCED LIGHTBOX (Double-click image):\n"
-            "• [V] Toggle Grayscale values.\n"
-            "• [M] Mirror image horizontally.\n"
+            "• [V] Toggle Grayscale | [M] Mirror horizontally.\n"
             "• [,] and [.] Step frame-by-frame through MP4/GIFs.\n"
-            "• [Space] Play/Pause video.\n"
-            "• [Shift+Click & Drag] Draw a box over a detail to crop and save it.\n\n"
+            "• [Shift+Click & Drag] Crop and save a detail shot.\n\n"
             "🎨 INFINITE MOODBOARD (PureRef Mode):\n"
             "• Right-click grid images -> 'Send to Moodboard'.\n"
-            "• [Middle-Click / Alt+Click] Pan the camera.\n"
-            "• [Scroll Wheel] Zoom in and out.\n"
-            "• Click the top header to drag the frameless window over Photoshop."
+            "• Click images to reveal 8 resize handles (corners scale proportionally, edges stretch).\n"
+            "• Right-click an image on the board to 'Restore 1:1 Original Size'.\n"
+            "• [Middle-Click / Alt+Click] Pan the camera.\n\n"
+            "⏱️ GESTURE PRACTICE:\n"
+            "• Click 'Gesture Practice' to start a timed figure-drawing session from your vault."
         )        
         
-    def update_ai_status(self, count):
-        if count > 0:
-            self.ai_status_label.setText(f"⚙️ Auto Tagging: {count} left")
-            self.ai_status_label.setStyleSheet(
-            "color: #f1c40f; padding: 10px; font-weight: bold; background-color: #273746; border-radius: 5px;"
-        )
+    def update_ai_status(self, count=None):
+        # If called without a specific count (like from a button click), just check the queue directly
+        if not isinstance(count, int):
+            count = self.ai_engine.inbox.qsize()
+
+        is_paused = getattr(self.ai_engine, 'is_paused', False)
+
+        # Disable buttons entirely if queue is empty
+        self.stop_ai_btn.setEnabled(count > 0)
+        self.pause_ai_btn.setEnabled(count > 0 or is_paused)
+
+        # 1. Determine Engine Memory State
+        if self.ai_engine.session is not None:
+            engine_text = "🤖 AI: Loaded (Ready)"
+            base_color = "#2ecc71" # Green
         else:
-        # ONLY show ready if model is actually loaded
-            if self.ai_engine.session is not None:
-                self.ai_status_label.setText("🤖 Auto Tagger: Ready")
-                self.ai_status_label.setStyleSheet(
-                "color: #2ecc71; padding: 10px; font-weight: bold; background-color: #273746; border-radius: 5px;"
-            )
+            engine_text = "💤 AI: Unloaded"
+            base_color = "#95a5a6" # Gray
+
+        # 2. Determine Queue State
+        if count > 0:
+            if is_paused:
+                queue_text = f"⏸ Queue: {count} (Paused)"
+                base_color = "#f39c12" # Orange overrides memory color if paused
             else:
-                self.ai_status_label.setText("💤 Auto Tagger: Unloaded (VRAM freed)")
-                self.ai_status_label.setStyleSheet(
-                "color: #95a5a6; padding: 10px; font-weight: bold; background-color: #273746; border-radius: 5px;"
-            )   
+                queue_text = f"⚙️ Queue: {count} left"
+                base_color = "#f1c40f" # Yellow overrides memory color if actively working
+        else:
+            queue_text = "📋 Queue: 0"
+
+        # Apply the combined 2-line text
+        self.ai_status_label.setText(f"{engine_text}\n{queue_text}")
+        self.ai_status_label.setStyleSheet(f"""
+            color: {base_color}; 
+            padding: 8px; 
+            font-weight: bold; 
+            background-color: #273746; 
+            border-radius: 5px;
+        """)
     
     
     
@@ -1154,25 +1320,18 @@ class ReferenceVault(QMainWindow):
     
     
     def on_ai_loaded(self):
-        
         self.toggle_ai_btn.setText("🛑 Unload Tagger")
         self.toggle_ai_btn.setStyleSheet("background-color: #c0392b; color: white; border-radius: 4px; padding: 8px; font-weight: bold;")
+        self.update_ai_status() # Refresh dual-label
         
         
-    # Only update if NOT actively tagging
-        if self.ai_engine.inbox.qsize() == 0:
-            self.ai_status_label.setText("🤖 Auto Tagger: Ready")
-            self.ai_status_label.setStyleSheet(
-            "color: #2ecc71; padding: 10px; font-weight: bold; background-color: #273746; border-radius: 5px;")
+    
 
 
     def on_ai_unloaded(self):
         self.toggle_ai_btn.setText("▶️ Load Tagger")
         self.toggle_ai_btn.setStyleSheet("background-color: #2ecc71; color: white; border-radius: 4px; padding: 8px; font-weight: bold;")
-        
-        self.ai_status_label.setText("💤 Auto Tagger: Unloaded (VRAM freed)")
-        self.ai_status_label.setStyleSheet(
-        "color: #95a5a6; padding: 10px; font-weight: bold; background-color: #273746; border-radius: 5px;")            
+        self.update_ai_status() # Refresh dual-label           
     #wipe cache
     def action_clear_cache(self):
         reply = QMessageBox.question(
@@ -1193,3 +1352,44 @@ class ReferenceVault(QMainWindow):
         if ok and name.strip():
             self.db.add_smart_folder(name.strip(), current_query)
             self.refresh_sidebar()        
+            
+    def toggle_ai_pause(self):
+        is_paused = self.ai_engine.toggle_pause()
+        if is_paused:
+            self.pause_ai_btn.setText("▶ Resume Queue")
+            self.pause_ai_btn.setStyleSheet("""
+                QPushButton { background-color: #2ecc71; color: white; border-radius: 4px; padding: 5px; }
+                QPushButton:disabled { background-color: #555555; color: #888888; }
+            """)
+        else:
+            self.pause_ai_btn.setText("⏸ Pause Queue")
+            self.pause_ai_btn.setStyleSheet("""
+                QPushButton { background-color: #f39c12; color: white; border-radius: 4px; padding: 5px; }
+                QPushButton:disabled { background-color: #555555; color: #888888; }
+            """)
+        self.update_ai_status() # Instantly update label to show "Paused" state
+
+    def handle_new_image(self, image_path):
+        if self.settings.get("auto_tag_import", True):
+            self.ai_engine.queue_image(image_path)
+
+    def start_gesture_mode(self):
+        from gesture_mode import GestureSetupDialog, GestureSession
+        dialog = GestureSetupDialog(self.db, self)
+        if dialog.exec():
+            if dialog.selected_images:
+                # Safely get the limit from the dialog, default to None if missing
+                session_limit = getattr(dialog, 'session_time_limit', None)
+                # Pass arguments exactly in order
+                self.gesture_session = GestureSession(dialog.selected_images, dialog.time_limit, session_limit, self)
+                self.gesture_session.show()
+            else:
+                QMessageBox.warning(self, "Empty", "No valid images found in the selected folders.")
+
+    def action_cache_all(self):
+        # Force cache generation for all vault images
+        from ui.canvas import ImageLoaderThread
+        folders = [f[1] for f in self.db.get_folders()]
+        self.caching_thread = ImageLoaderThread(folders, self.canvas.valid_extensions)
+        self.caching_thread.start()
+        QMessageBox.information(self, "Caching Started", "Caching all uncached images in the background. Your UI will remain responsive.")        

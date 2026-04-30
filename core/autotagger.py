@@ -31,7 +31,8 @@ class AITaggerWorker(QThread):
 
         self.inbox = queue.Queue()
         self.is_running = True
-
+       #Start paused so old background images don't process immediately
+        self.is_paused = True
         self.session = None
         self.model_path = ""
         self.tags_vocab = []
@@ -44,6 +45,15 @@ class AITaggerWorker(QThread):
         self.max_tags = 12
     
     #ENGINE LIFECYCLE
+    
+    def toggle_pause(self):
+        self.is_paused = not self.is_paused
+        return self.is_paused
+
+    def clear_queue(self):
+        with self.inbox.mutex:
+            self.inbox.queue.clear()
+        self.queue_updated.emit(0)
     
     def create_session(self, providers):
         return ort.InferenceSession(
@@ -140,8 +150,9 @@ class AITaggerWorker(QThread):
                 for row in reader:
                     self.tags_vocab.append(row[1])
 
-            self.load_engine()
+            #self.load_engine()
             self.engine_ready.emit()
+            print("Engine initialized (Standing by for images...)")
 
         except Exception:
             error_msg = traceback.format_exc()
@@ -161,6 +172,10 @@ class AITaggerWorker(QThread):
         #MAIN LOOP
         
         while self.is_running:
+            if self.is_paused:
+                time.sleep(0.5)
+                continue
+            
             image_path = None
 
             try:

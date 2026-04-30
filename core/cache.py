@@ -7,7 +7,8 @@ from PyQt6.QtCore import QByteArray, QBuffer, QIODevice
 class CacheManager:
     def __init__(self, cache_file="thumbnails.cache"):
         self.cache_file = cache_file
-        self.conn = sqlite3.connect(self.cache_file, check_same_thread=False)
+        self.conn = sqlite3.connect(self.cache_file, check_same_thread=False, timeout=10.0)
+        self.conn.execute("PRAGMA journal_mode=WAL;")
         self.create_table()
 
     def create_table(self):

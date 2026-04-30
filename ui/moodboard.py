@@ -15,18 +15,37 @@ class MovableImage(QGraphicsPixmapItem):
             if pixmap.width() > 2000 or pixmap.height() > 2000:
                 pixmap = pixmap.scaled(2000, 2000, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
             self.setPixmap(pixmap)
-        
+            
         self.setFlag(QGraphicsPixmapItem.GraphicsItemFlag.ItemIsMovable)
         self.setFlag(QGraphicsPixmapItem.GraphicsItemFlag.ItemIsSelectable)
         self.setFlag(QGraphicsPixmapItem.GraphicsItemFlag.ItemSendsGeometryChanges)
         self.setAcceptHoverEvents(True)
         
-        self._is_resizing = False
-        self._resize_start_scale = 1.0
-        self._resize_start_pos = QPointF()
+        self._resize_mode = None
+        self._start_transform = QTransform()
+        self._start_pos = QPointF()
+        self._start_rect = self.boundingRect()
+
+    def get_handles(self):
+        rect = self.boundingRect()
+        tx = self.transform()
+        #increased base size for easier grabbing
+        s = max(24.0, 32.0 / max(tx.m11(), tx.m22(), 0.01))
+        half = s / 2.0
+        
+        #Centering the hitboxes perfectly over the edges/corners
+        return {
+            'tl': QRectF(rect.left() - half, rect.top() - half, s, s),
+            't':  QRectF(rect.center().x() - half, rect.top() - half, s, s),
+            'tr': QRectF(rect.right() - half, rect.top() - half, s, s),
+            'r':  QRectF(rect.right() - half, rect.center().y() - half, s, s),
+            'br': QRectF(rect.right() - half, rect.bottom() - half, s, s),
+            'b':  QRectF(rect.center().x() - half, rect.bottom() - half, s, s),
+            'bl': QRectF(rect.left() - half, rect.bottom() - half, s, s),
+            'l':  QRectF(rect.left() - half, rect.center().y() - half, s, s),
+        }
 
     def paint(self, painter, option, widget=None): # type: ignore
-       
         if option is None or painter is None: 
             return
             
@@ -34,23 +53,28 @@ class MovableImage(QGraphicsPixmapItem):
         super().paint(painter, option, widget)
         
         if self.isSelected():
-            current_scale = self.scale()
-            pen = QPen(QColor("#3498db"), max(2.0, 4.0 / current_scale))
-            painter.setPen(pen)
+            tx = self.transform()
+            s = max(1.0, 2.0 / max(tx.m11(), tx.m22(), 0.01))
+            painter.setPen(QPen(QColor("#3498db"), s))
             painter.drawRect(self.boundingRect())
             
-            size = max(10.0, 20.0 / current_scale)
-            rect = self.boundingRect()
             painter.setBrush(QColor("#3498db"))
-            painter.drawRect(QRectF(rect.right() - size, rect.bottom() - size, size, size))
+            for handle in self.get_handles().values():
+                painter.drawRect(handle)
 
     def hoverMoveEvent(self, event): # type: ignore
         if event is None: return
         if self.isSelected():
-            size = max(10.0, 20.0 / self.scale())
-            rect = self.boundingRect()
-            if event.pos().x() >= rect.right() - size and event.pos().y() >= rect.bottom() - size:
+            pos = event.pos()
+            handles = self.get_handles()
+            if handles['tl'].contains(pos) or handles['br'].contains(pos):
                 self.setCursor(Qt.CursorShape.SizeFDiagCursor)
+            elif handles['tr'].contains(pos) or handles['bl'].contains(pos):
+                self.setCursor(Qt.CursorShape.SizeBDiagCursor)
+            elif handles['t'].contains(pos) or handles['b'].contains(pos):
+                self.setCursor(Qt.CursorShape.SizeVerCursor)
+            elif handles['l'].contains(pos) or handles['r'].contains(pos):
+                self.setCursor(Qt.CursorShape.SizeHorCursor)
             else:
                 self.setCursor(Qt.CursorShape.ArrowCursor)
         else:
@@ -59,44 +83,63 @@ class MovableImage(QGraphicsPixmapItem):
 
     def mousePressEvent(self, event): # type: ignore
         if event is None: return
-        if self.cursor().shape() == Qt.CursorShape.SizeFDiagCursor and event.button() == Qt.MouseButton.LeftButton:
-            self._is_resizing = True
-            self._resize_start_scale = self.scale()
-            self._resize_start_pos = event.scenePos()
-            event.accept()
-            return
+        if event.button() == Qt.MouseButton.LeftButton and self.isSelected():
+            pos = event.pos()
+            for mode, rect in self.get_handles().items():
+                if rect.contains(pos):
+                    self._resize_mode = mode
+                    self._start_pos = event.scenePos()
+                    self._start_transform = self.transform()
+                    self._start_rect = self.boundingRect()
+                    event.accept()
+                    return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event): # type: ignore
         if event is None: return
-        if self._is_resizing:
-            delta = event.scenePos().x() - self._resize_start_pos.x()
-            scale_change = delta / (self.boundingRect().width() * self._resize_start_scale)
-            new_scale = max(0.05, self._resize_start_scale + scale_change)
-            self.setScale(new_scale)
+        if self._resize_mode:
+            delta = event.scenePos() - self._start_pos
+            rect = self._start_rect
+            
+            sx = self._start_transform.m11()
+            sy = self._start_transform.m22()
+            
+            dx = delta.x() / rect.width()
+            dy = delta.y() / rect.height()
+
+            # Proportional corners
+            if self._resize_mode in ['tl', 'tr', 'bl', 'br']:
+                scale_factor = max(dx, dy) if self._resize_mode == 'br' else min(dx, dy)
+                sx = max(0.05, sx + dx)
+                sy = max(0.05, sy + dy)
+                # Force proportional
+                avg_scale = (sx + sy) / 2
+                sx, sy = avg_scale, avg_scale
+            # Edge stretches (Non-uniform)
+            elif self._resize_mode in ['l', 'r']:
+                sx = max(0.05, sx + dx)
+            elif self._resize_mode in ['t', 'b']:
+                sy = max(0.05, sy + dy)
+
+            self.setTransform(QTransform.fromScale(sx, sy))
             event.accept()
             return
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event): # type: ignore
         if event is None: return
-        if self._is_resizing:
-            self._is_resizing = False
+        if self._resize_mode:
+            self._resize_mode = None
             event.accept()
             self._mark_parent_dirty()
             return
-            
         super().mouseReleaseEvent(event)
-        self._mark_parent_dirty()
 
     def _mark_parent_dirty(self):
-        
         scene = self.scene()
         if scene is None: return
-        
         views = scene.views()
         if not views: return
-        
         view = views[0]
         if hasattr(view, 'safe_parent') and getattr(view, 'safe_parent'): 
             getattr(view, 'safe_parent').mark_dirty()
@@ -168,6 +211,8 @@ class InfiniteBoard(QGraphicsView):
             bring_front = menu.addAction("Bring to Front")
             send_back = menu.addAction("Send to Back")
             menu.addSeparator()
+            restore_action = menu.addAction("🔍 Restore 1:1 Original Size") 
+            menu.addSeparator()
             remove_action = menu.addAction("Remove from Board")
             
             action = menu.exec(event.globalPos())
@@ -179,6 +224,9 @@ class InfiniteBoard(QGraphicsView):
                 if self.safe_parent: self.safe_parent.mark_dirty()
             elif action == send_back:
                 item.setZValue(item.zValue() - 1)
+                if self.safe_parent: self.safe_parent.mark_dirty()
+            elif action == restore_action: 
+                item.setTransform(QTransform()) #Resets scaling to 1.0
                 if self.safe_parent: self.safe_parent.mark_dirty()
         else:
             arrange_action = menu.addAction("🗐 Auto-Arrange Images")
@@ -288,7 +336,7 @@ class PureRefOverlay(QWidget):
         self.current_filepath = None
         self.is_dirty = False
         self.is_pinned_top = True
-        self.is_locked = False # UX FIX: Window Locking
+        self.is_locked = False #Window Locking
         
         self.main_layout = QVBoxLayout(self)
         self.main_layout.setContentsMargins(4, 4, 4, 4) 
@@ -307,7 +355,7 @@ class PureRefOverlay(QWidget):
         h_layout.addWidget(self.title_label)
         h_layout.addStretch()
         
-        # UX FIX: Window Opacity Slider
+        #Window Opacity Slider
         opacity_label = QLabel("👁️")
         opacity_label.setStyleSheet("color: white; font-size: 14px;")
         h_layout.addWidget(opacity_label)
@@ -321,25 +369,36 @@ class PureRefOverlay(QWidget):
         h_layout.addWidget(self.opacity_slider)
         h_layout.addSpacing(10)
         
-        # UX FIX: Lock Position Toggle
+        #Lock Position Toggle
         self.lock_btn = QPushButton("🔓")
         self.lock_btn.setFixedSize(24, 24)
         self.lock_btn.setStyleSheet("QPushButton { color: white; border: none; font-size: 14px; } QPushButton:hover { background-color: #555; border-radius: 12px; }")
         self.lock_btn.clicked.connect(self.toggle_lock)
         h_layout.addWidget(self.lock_btn)
 
+        #keep window above all others
         self.pin_btn = QPushButton("📌 Pin Top")
         self.pin_btn.setFixedSize(60, 20)
         self.pin_btn.setStyleSheet("QPushButton { background-color: #3498db; color: white; border: none; font-weight: bold; border-radius: 4px; font-size: 10px; }")
         self.pin_btn.clicked.connect(self.toggle_pin_top)
         h_layout.addWidget(self.pin_btn)
         
+        #minimize
         min_btn = QPushButton("—")
         min_btn.setFixedSize(24, 24)
         min_btn.setStyleSheet("QPushButton { color: white; border: none; font-weight: bold; border-radius: 12px; } QPushButton:hover { background-color: #f1c40f; }")
         min_btn.clicked.connect(self.showMinimized)
         h_layout.addWidget(min_btn)
         
+        #Maximize Button
+        self.max_btn = QPushButton("☐")
+        self.max_btn.setFixedSize(24, 24)
+        self.max_btn.setStyleSheet("QPushButton { color: white; border: none; font-weight: bold; border-radius: 12px; } QPushButton:hover { background-color: #2ecc71; }")
+        self.max_btn.clicked.connect(self.toggle_maximize)
+        h_layout.addWidget(self.max_btn)
+        
+        
+        #Close button
         close_btn = QPushButton("✕")
         close_btn.setFixedSize(24, 24)
         close_btn.setStyleSheet("QPushButton { color: white; border: none; font-weight: bold; border-radius: 12px; } QPushButton:hover { background-color: #e74c3c; }")
@@ -357,7 +416,20 @@ class PureRefOverlay(QWidget):
         self.setMouseTracking(True)
         self.header.setMouseTracking(True)
 
+        self.setMinimumSize(50, 50)
+        self.header.hide()
+        
     # --- Header Actions ---
+    
+    #Maximize window
+    def toggle_maximize(self):
+        if self.isMaximized():
+            self.showNormal()
+        else:
+            self.showMaximized()
+    
+    
+    
     def toggle_lock(self):
         self.is_locked = not self.is_locked
         self.lock_btn.setText("🔒" if self.is_locked else "🔓")
@@ -367,6 +439,17 @@ class PureRefOverlay(QWidget):
         else:
             self.setStyleSheet("background-color: rgba(30, 30, 30, 0.98); border: none;")
 
+    def enterEvent(self, event): # type: ignore
+        if event is None: return
+        if not self.is_locked:
+            self.header.show()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event): # type: ignore
+        if event is None: return
+        self.header.hide()
+        super().leaveEvent(event)
+    
     def update_title(self):
         name = os.path.basename(self.current_filepath) if self.current_filepath else "Untitled"
         dirty_star = "*" if self.is_dirty else ""
@@ -384,11 +467,19 @@ class PureRefOverlay(QWidget):
         self.show()
 
     def save_board(self):
-        file_path = self.current_filepath
-        if not file_path:
-            file_path, _ = QFileDialog.getSaveFileName(self, "Save Moodboard", "", "Vault Board (*.rvboard);;JSON (*.json)")
+        from PyQt6.QtWidgets import QDialog # Ensure this is imported
         
-        if not file_path: return False
+        if self.current_filepath:
+            file_path = self.current_filepath
+        else:
+            dlg = QFileDialog(self, "Save Moodboard", "", "Vault Board (*.rvboard);;JSON (*.json)")
+            dlg.setStyleSheet("background-color: #2a2a2a; color: white;")
+            dlg.setAcceptMode(QFileDialog.AcceptMode.AcceptSave)
+            
+            if dlg.exec() == QDialog.DialogCode.Accepted:
+                file_path = dlg.selectedFiles()[0]
+            else:
+                return False
         
         data = []
         for item in self.board.board_scene.items():
@@ -412,15 +503,31 @@ class PureRefOverlay(QWidget):
             return False
 
     def load_board(self):
+        from PyQt6.QtWidgets import QDialog 
+        
         if self.is_dirty:
-            reply = QMessageBox.question(self, "Unsaved Changes", "You have unsaved changes. Do you want to save before loading a new board?",
-                                         QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel)
+            msg = QMessageBox(self)
+            msg.setWindowTitle("Unsaved Changes")
+            msg.setText("Save changes to your moodboard before loading a new one?")
+            msg.setStyleSheet("background-color: #2a2a2a; color: white; QLabel { color: white; }")
+            msg.setStandardButtons(QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel)
+            
+            reply = msg.exec()
+            
             if reply == QMessageBox.StandardButton.Save:
-                if not self.save_board(): return
-            elif reply == QMessageBox.StandardButton.Cancel: return
+                if not self.save_board():
+                    return
+            elif reply == QMessageBox.StandardButton.Cancel:
+                return
 
-        file_path, _ = QFileDialog.getOpenFileName(self, "Load Moodboard", "", "Vault Board (*.rvboard);;JSON (*.json)")
-        if not file_path: return
+        dlg = QFileDialog(self, "Load Moodboard", "", "Vault Board (*.rvboard);;JSON (*.json)")
+        dlg.setStyleSheet("background-color: #2a2a2a; color: white;")
+        dlg.setAcceptMode(QFileDialog.AcceptMode.AcceptOpen)
+        
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            file_path = dlg.selectedFiles()[0]
+        else:
+            return
         
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
@@ -444,8 +551,14 @@ class PureRefOverlay(QWidget):
     def closeEvent(self, event): # type: ignore
         if event is None: return
         if self.is_dirty:
-            reply = QMessageBox.question(self, "Unsaved Changes", "Save changes to your moodboard before closing?",
-                                         QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel)
+            msg = QMessageBox(self)
+            msg.setWindowTitle("Unsaved Changes")
+            msg.setText("Save changes to your moodboard before closing?")
+            msg.setStyleSheet("background-color: #2a2a2a; color: white; QLabel { color: white; }")
+            msg.setStandardButtons(QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel)
+            
+            reply = msg.exec()
+            
             if reply == QMessageBox.StandardButton.Save:
                 if not self.save_board():
                     event.ignore()

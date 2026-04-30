@@ -386,8 +386,14 @@ class AdvancedLightbox(QDialog):
             crop_rect = QRect(int(rect_in_scene.x()), int(rect_in_scene.y()), int(rect_in_scene.width()), int(rect_in_scene.height()))
             cropped_qimage = self.original_qimage.copy(crop_rect) # type: ignore
             
-            save_path, _ = QFileDialog.getSaveFileName(self, "Save Detail Crop", os.path.dirname(self.current_path), "Images (*.png *.jpg)")
-            if save_path:
+            #Fix black text on black bg
+            dlg = QFileDialog(self, "Save Detail Crop", os.path.dirname(self.current_path), "Images (*.png *.jpg)")
+            dlg.setStyleSheet("background-color: #2a2a2a; color: white;")
+            dlg.setAcceptMode(QFileDialog.AcceptMode.AcceptSave)
+            
+            
+            if dlg.exec() == QDialog.DialogCode.Accepted:
+                save_path = dlg.selectedFiles()[0]
                 cropped_qimage.save(save_path)
                 print(f"Detail crop saved to {save_path}")    
         self.rubber_band.hide()
