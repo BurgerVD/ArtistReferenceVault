@@ -1,7 +1,7 @@
 import os
 import random
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
-                             QPushButton, QWidget, QListWidget, QListWidgetItem, QComboBox)
+                             QPushButton, QWidget, QListWidget, QListWidgetItem, QComboBox,QTreeWidget, QTreeWidgetItem, QTreeWidgetItemIterator)
 from PyQt6.QtCore import Qt, QTimer, QSize, QPoint
 from PyQt6.QtGui import QPixmap, QImage, QKeySequence, QShortcut, QPainter, QColor
 
@@ -36,7 +36,7 @@ class GestureSession(QWidget):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.tick)
         
-        self.resize(600, 800) 
+        self.resize(800, 800) 
         self.load_image()
         self.timer.start(1000)
 
@@ -77,29 +77,21 @@ class GestureSession(QWidget):
         self.main_layout.addWidget(self.image_label, stretch=1)
         
         self.overlay = QWidget(self)
-        self.overlay.setStyleSheet("background-color: rgba(20, 20, 25, 0.85); border-radius: 10px; border: 1px solid #333;")
+        self.overlay.setStyleSheet("background-color: rgba(20, 20, 25, 0.95); border-radius: 10px; border: 1px solid #444;")
         overlay_layout = QHBoxLayout(self.overlay)
-        overlay_layout.setContentsMargins(15, 5, 15, 5)
-              
-                
-        #TRACKERS
+        overlay_layout.setContentsMargins(15, 10, 15, 10)
+        
+        # TRACKERS
         self.progress_label = QLabel()
         self.progress_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #aaaaaa; border: none;")
-        
-        self.total_time_label = QLabel()
-        self.total_time_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #f39c12; border: none;")
         
         self.timer_label = QLabel(self.format_time(self.time_remaining))
         self.timer_label.setStyleSheet("font-size: 32px; font-weight: bold; color: #2ecc71; border: none;")
         
-        # Add to layout
-        overlay_layout.addWidget(self.progress_label)
-        overlay_layout.addSpacing(10)
-        overlay_layout.addWidget(self.timer_label)
-        overlay_layout.addSpacing(10)
-        overlay_layout.addWidget(self.total_time_label)
-        overlay_layout.addSpacing(15)
+        self.total_time_label = QLabel()
+        self.total_time_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #f39c12; border: none;")
         
+        # BUTTONS
         btn_style = "QPushButton { background-color: #34495e; color: white; border: none; padding: 6px 12px; border-radius: 6px; font-weight: bold; font-size: 12px;} QPushButton:hover { background-color: #3498db; }"
         
         self.play_btn = QPushButton("⏸ Pause")
@@ -114,13 +106,20 @@ class GestureSession(QWidget):
         next_btn.setStyleSheet(btn_style)
         next_btn.clicked.connect(self.next_image)
         
+        # ASSEMBLE LAYOUT (Left to Right)
+        overlay_layout.addWidget(self.progress_label)
+        overlay_layout.addSpacing(15)
         overlay_layout.addWidget(self.timer_label)
         overlay_layout.addSpacing(15)
+        overlay_layout.addWidget(self.total_time_label)
+        
+        overlay_layout.addStretch() # Pushes the buttons to the right side
+        
         overlay_layout.addWidget(prev_btn)
         overlay_layout.addWidget(self.play_btn)
         overlay_layout.addWidget(next_btn)
         
-        self.overlay.resize(500, 60) #Make overlay wider to fit new info
+        self.overlay.resize(650, 65)
 
     def toggle_pin_top(self):
         self.is_pinned_top = not self.is_pinned_top
@@ -309,7 +308,7 @@ class GestureSetupDialog(QDialog):
         super().__init__(parent)
         self.db = db_manager
         self.setWindowTitle("Gesture Practice Setup")
-        self.setFixedSize(400, 500)
+        self.setFixedSize(550, 600) # Made slightly taller to fit the tree comfortably
         self.setStyleSheet("background-color: #1e1e1e; color: white;")
         self.selected_images = []
         self.time_limit = 30
@@ -318,27 +317,85 @@ class GestureSetupDialog(QDialog):
     def setup_ui(self):
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel("1. Select Folders to Practice From:"))
-        self.folder_list = QListWidget()
-        self.folder_list.setStyleSheet("background-color: #2c3e50; border: 1px solid #34495e; border-radius: 4px; padding: 5px;")
         
-        folders = self.db.get_folders()
-        for name, path in folders:
-            item = QListWidgetItem(name)
+        # --- NEW: Select/Deselect All Buttons ---
+        tree_controls = QHBoxLayout()
+        self.select_all_btn = QPushButton("☑ Select All")
+        self.select_all_btn.setStyleSheet("background-color: #34495e; color: white; border-radius: 4px; padding: 5px;")
+        self.select_all_btn.clicked.connect(self.select_all)
+        
+        self.deselect_all_btn = QPushButton("☐ Deselect All")
+        self.deselect_all_btn.setStyleSheet("background-color: #34495e; color: white; border-radius: 4px; padding: 5px;")
+        self.deselect_all_btn.clicked.connect(self.deselect_all)
+        
+        tree_controls.addWidget(self.select_all_btn)
+        tree_controls.addWidget(self.deselect_all_btn)
+        layout.addLayout(tree_controls)
+
+        # --- NEW: Hierarchical Tree View ---
+        self.folder_tree = QTreeWidget()
+        self.folder_tree.setHeaderHidden(True)
+        self.folder_tree.setStyleSheet("""
+            QTreeWidget { background-color: #2c3e50; border: 1px solid #34495e; border-radius: 4px; padding: 5px; }
+            QTreeWidget::item { padding: 4px; }
+        """)
+        
+        # Pull visual hierarchy from main window settings so it matches the sidebar
+        custom_hierarchy = {}
+        parent_widget = self.parent()
+        if parent_widget and hasattr(parent_widget, 'settings'):
+            #Use getattr to safely pull the dictionary
+            app_settings = getattr(parent_widget, 'settings', {})
+            custom_hierarchy = app_settings.get("custom_hierarchy", {})
+
+        saved_folders = self.db.get_folders()
+        item_map = {}
+        top_level_items = []
+        
+        # Pass 1: Create all tree items
+        for name, path in saved_folders:
+            clean_path = os.path.normpath(path)
+            item = QTreeWidgetItem([name])
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            item.setCheckState(Qt.CheckState.Unchecked)
-            item.setData(Qt.ItemDataRole.UserRole, path)
-            self.folder_list.addItem(item)
+            item.setCheckState(0, Qt.CheckState.Unchecked)
+            item.setData(0, Qt.ItemDataRole.UserRole, path)
+            item_map[clean_path] = item
             
-        layout.addWidget(self.folder_list)
+        # Pass 2: Link parents and children
+        for name, path in saved_folders:
+            clean_path = os.path.normpath(path)
+            item = item_map[clean_path]
+            
+            # Check visual override, fallback to OS parent
+            if path in custom_hierarchy:
+                parent_key = custom_hierarchy[path]
+            else:
+                parent_key = os.path.dirname(clean_path)
+                
+            if parent_key == "root" or parent_key not in item_map:
+                top_level_items.append(item)
+            else:
+                item_map[parent_key].addChild(item)
+                
+        self.folder_tree.addTopLevelItems(top_level_items)
+        self.folder_tree.expandAll()
+        
+        # Connect the cascade logic AFTER building the tree
+        self.folder_tree.itemChanged.connect(self.on_item_changed)
+        
+        layout.addWidget(self.folder_tree)
+        
+        # --- 2. Time Per Image ---
         layout.addWidget(QLabel("2. Time Per Image:"))
         self.time_combo = QComboBox()
         self.time_combo.setStyleSheet("background-color: #34495e; padding: 5px; border-radius: 4px;")
         self.time_combo.addItems(["30 Seconds", "45 Seconds", "1 Minute", "2 Minutes", "5 Minutes", "10 Minutes"])
         layout.addWidget(self.time_combo)
-        layout.addSpacing(20)
         
+        # --- 3. Session Limit ---
         layout.addSpacing(10)
         layout.addWidget(QLabel("3. Session Limit:"))
+        
         limit_layout = QHBoxLayout()
         self.limit_type = QComboBox()
         self.limit_type.addItems(["All Images", "Max Images", "Total Minutes"])
@@ -349,26 +406,63 @@ class GestureSetupDialog(QDialog):
         self.limit_value.setRange(1, 1000)
         self.limit_value.setValue(20)
         self.limit_value.setStyleSheet("background-color: #34495e; padding: 5px; border-radius: 4px;")
-        self.limit_value.setEnabled(False) #Disabled for "All Images"
+        self.limit_value.setEnabled(False) 
         
         self.limit_type.currentTextChanged.connect(lambda t: self.limit_value.setEnabled(t != "All Images"))
         
         limit_layout.addWidget(self.limit_type)
         limit_layout.addWidget(self.limit_value)
-        layout.addLayout(limit_layout)        
+        layout.addLayout(limit_layout)
         
-        
+        layout.addSpacing(10)
         self.start_btn = QPushButton("🎨 Start Session")
         self.start_btn.setStyleSheet("QPushButton { background-color: #9b59b6; color: white; padding: 12px; font-size: 16px; font-weight: bold; border-radius: 6px; } QPushButton:hover { background-color: #8e44ad; }")
         self.start_btn.clicked.connect(self.start_session)
         layout.addWidget(self.start_btn)
 
+    # --- Cascading Checkbox Logic ---
+    def on_item_changed(self, item, column):
+        # Block signals temporarily to prevent infinite recursion
+        self.folder_tree.blockSignals(True)
+        state = item.checkState(0)
+        self.update_children_state(item, state)
+        self.folder_tree.blockSignals(False)
+
+    def update_children_state(self, item, state):
+        for i in range(item.childCount()):
+            child = item.child(i)
+            child.setCheckState(0, state)
+            self.update_children_state(child, state) # Recurse for nested folders
+
+    def select_all(self):
+        self.folder_tree.blockSignals(True)
+        iterator = QTreeWidgetItemIterator(self.folder_tree)
+        while iterator.value():
+            item = iterator.value()
+            if item: # Type Guard
+                item.setCheckState(0, Qt.CheckState.Checked)
+            iterator += 1
+        self.folder_tree.blockSignals(False)
+            
+    def deselect_all(self):
+        self.folder_tree.blockSignals(True)
+        iterator = QTreeWidgetItemIterator(self.folder_tree)
+        while iterator.value():
+            item = iterator.value()
+            if item: # Type Guard
+                item.setCheckState(0, Qt.CheckState.Unchecked)
+            iterator += 1
+        self.folder_tree.blockSignals(False)
+
     def start_session(self):
         paths_to_scan = []
-        for i in range(self.folder_list.count()):
-            item = self.folder_list.item(i)
-            if item and item.checkState() == Qt.CheckState.Checked:
-                paths_to_scan.append(item.data(Qt.ItemDataRole.UserRole))
+        
+        iterator = QTreeWidgetItemIterator(self.folder_tree)
+        while iterator.value():
+            item = iterator.value()
+            if item and item.checkState(0) == Qt.CheckState.Checked: # Type Guard
+                paths_to_scan.append(item.data(0, Qt.ItemDataRole.UserRole))
+            iterator += 1
                 
         if not paths_to_scan: return 
             
@@ -381,10 +475,14 @@ class GestureSetupDialog(QDialog):
                         self.selected_images.append(os.path.join(root, f))
                         
         if not self.selected_images: return
+        
+        # Remove duplicates in case parent and child were both checked
+        self.selected_images = list(set(self.selected_images))
+        import random
         random.shuffle(self.selected_images)
         
         limit_mode = self.limit_type.currentText()
-        self.session_time_limit = None # None means infinite session time
+        self.session_time_limit = None
         
         if limit_mode == "Max Images":
             self.selected_images = self.selected_images[:self.limit_value.value()]

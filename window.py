@@ -248,7 +248,7 @@ class ReferenceVault(QMainWindow):
         
         
         #update checker
-        self.CURRENT_VERSION = "v2" 
+        self.CURRENT_VERSION = "v2.0.1" 
         
         self.update_checker = UpdateCheckerThread(self.CURRENT_VERSION)
         self.update_checker.update_available.connect(self.show_update_dialog)
@@ -495,8 +495,9 @@ class ReferenceVault(QMainWindow):
         self.splitter.setSizes([250, 750])
 
         #STARTUP LOGIC
+        # 1. Start AI Engine after 2 seconds (Let the UI render first)
         if self.settings["load_ai_on_startup"]:
-            QTimer.singleShot(500, lambda: self.ai_engine.start(QThread.Priority.NormalPriority))
+            QTimer.singleShot(2000, lambda: self.ai_engine.start(QThread.Priority.NormalPriority))
         else:
             self.ai_status_label.setText("🤖 Tagger Disabled on Startup") 
             self.toggle_ai_btn.setText("▶️ Load Tagger")
@@ -506,13 +507,13 @@ class ReferenceVault(QMainWindow):
             self.search_bar.setPlaceholderText("Search for images here (e.g. 'girl','sword')...")
             self.update_search_autocomplete()
             
-        #Trigger background crawler
+        # 2. Trigger background crawler after 4 seconds (Prevent HDD thrashing on boot)
         saved_folders = self.db.get_folders()
         folder_paths = [path for name, path in saved_folders] 
         if folder_paths:
-            self.start_crawler(folder_paths)
+            QTimer.singleShot(4000, lambda: self.start_crawler(folder_paths))
 
-        #Restore Last opened Folder
+        # 3. Restore Last opened Folder (Instant)
         last_folder = self.settings.get("last_folder")
         if last_folder and os.path.exists(last_folder):
             iterator = QTreeWidgetItemIterator(self.folder_list)
@@ -616,7 +617,6 @@ class ReferenceVault(QMainWindow):
             self.folder_list.setCurrentItem(item)
             data = item.data(0, Qt.ItemDataRole.UserRole)
             
-            # Unpack the new V2.0 Dictionary format safely
             is_physical = isinstance(data, dict) and data.get("type") == "physical"
             is_smart = isinstance(data, dict) and data.get("type") == "smart"
             
@@ -640,7 +640,7 @@ class ReferenceVault(QMainWindow):
                 self.create_custom_folder(parent_path=path)
             else:
                 self.create_custom_folder()
-                
+         #Rename       
         elif item is not None: 
             data = item.data(0, Qt.ItemDataRole.UserRole)
             if rename_action and action == rename_action:  
@@ -652,13 +652,49 @@ class ReferenceVault(QMainWindow):
                     parent_dir = os.path.dirname(old_path)
                     new_path = os.path.join(parent_dir, new_name)
                     try:
+                        # 1. Rename on OS FIRST
                         os.rename(old_path, new_path)
+                        
+                        # 2. Rename in DB (Will raise Exception if it fails now)
                         self.db.rename_folder(old_path, new_path, new_name)
+                        
+                        # 3. Safely update the visual hierarchy JSON so it doesn't break
+                        if "custom_hierarchy" in self.settings:
+                            import json
+                            hierarchy = self.settings["custom_hierarchy"]
+                            new_hierarchy = {}
+                            
+                            old_base = os.path.normpath(old_path)
+                            new_base = os.path.normpath(new_path)
+                            
+                            for k, v in hierarchy.items():
+                                if k == old_base or k.startswith(old_base + os.sep):
+                                    new_k = new_base + k[len(old_base):]
+                                else:
+                                    new_k = k
+                                    
+                                if v == old_base or v.startswith(old_base + os.sep):
+                                    new_v = new_base + v[len(old_base):]
+                                else:
+                                    new_v = v
+                                    
+                                new_hierarchy[new_k] = new_v
+                                
+                            self.settings["custom_hierarchy"] = new_hierarchy
+                            with open(self.settings_path, "w") as f:
+                                json.dump(self.settings, f)
+                        
                         self.current_folder_path = new_path
                         self.refresh_sidebar()
                         self.canvas.load_images_from_path(new_path)
                     except Exception as e:
-                        QMessageBox.critical(self, "Error", f"Failed to rename.\n\n{e}")
+                        # CRITICAL: If DB or JSON fails, revert the OS rename!
+                        if os.path.exists(new_path) and not os.path.exists(old_path):
+                            try:
+                                os.rename(new_path, old_path)
+                            except:
+                                pass
+                        QMessageBox.critical(self, "Error", f"Failed to rename folder.\n\n{e}")
                         self.refresh_sidebar()
              
             elif retag_action and action == retag_action:
@@ -669,7 +705,7 @@ class ReferenceVault(QMainWindow):
                 self.remove_folder(item, permanent=True)
             elif delete_smart_action and action == delete_smart_action:
                 self.db.delete_smart_folder(item.text(0))
-                self.refresh_sidebar()   
+                self.refresh_sidebar()
         
     
     
@@ -1387,9 +1423,38 @@ class ReferenceVault(QMainWindow):
                 QMessageBox.warning(self, "Empty", "No valid images found in the selected folders.")
 
     def action_cache_all(self):
-        # Force cache generation for all vault images
+        # Force cache generation for all uncached vault images
         from ui.canvas import ImageLoaderThread
-        folders = [f[1] for f in self.db.get_folders()]
-        self.caching_thread = ImageLoaderThread(folders, self.canvas.valid_extensions)
+        from PyQt6.QtWidgets import QProgressDialog
+        
+        #Gather all actual image files from the saved folders
+        all_files = []
+        for name, folder in self.db.get_folders():
+            if not os.path.exists(folder): continue
+            for root, _, files in os.walk(folder):
+                for file in files:
+                    if os.path.splitext(file)[1].lower() in self.canvas.valid_extensions:
+                        all_files.append(os.path.join(root, file))
+                        
+        if not all_files:
+            QMessageBox.information(self, "Empty", "No valid images found to cache.")
+            return
+            
+        #Feed the raw files to the background thread
+        self.caching_thread = ImageLoaderThread(all_files, self.canvas.valid_extensions)
+        
+        #Create a visual Progress Dialog (Indeterminate Marquee)
+        self.cache_dialog = QProgressDialog("Caching Vault Images in the background...\nThis may take a while for large vaults.", "Cancel", 0, 0, self)
+        self.cache_dialog.setWindowTitle("Global Caching")
+        self.cache_dialog.setStyleSheet("background-color: #2a2a2a; color: white; QLabel { color: white; }")
+        self.cache_dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        self.cache_dialog.setMinimumDuration(0)
+        
+        # Connect Cancel button to kill the thread, and thread finish to close the dialog
+        self.cache_dialog.canceled.connect(self.caching_thread.requestInterruption)
+        self.caching_thread.finished.connect(self.cache_dialog.accept)
+        
         self.caching_thread.start()
-        QMessageBox.information(self, "Caching Started", "Caching all uncached images in the background. Your UI will remain responsive.")        
+        self.cache_dialog.show()
+        
+        

@@ -158,36 +158,44 @@ class DatabaseManager:
     
     def rename_folder(self, old_path, new_path, new_name):
         cursor = self.conn.cursor()
-        is_windows = sys.platform.startswith('win')
         try:
             import os
-            cursor.execute("UPDATE folders SET name = ?, path = ? WHERE path = ?", (new_name, new_path, old_path))
-            norm_old_base = os.path.normpath(old_path) + os.sep
-            norm_new_base = os.path.normpath(new_path) + os.sep
-            test_old_base = norm_old_base.lower() if is_windows else norm_old_base
+            # Update the main folder
+            cursor.execute("UPDATE OR REPLACE folders SET name = ?, path = ? WHERE path = ?", (new_name, new_path, old_path))
             
+            old_base = os.path.normpath(old_path) + os.sep
+            new_base = os.path.normpath(new_path) + os.sep
+            
+            # 1. Gather Child Folder Updates
             cursor.execute("SELECT id, path FROM folders")
+            folder_updates = []
             for row_id, f_path in cursor.fetchall():
                 norm_f = os.path.normpath(f_path)
-                test_f = norm_f.lower() if is_windows else norm_f
-                if test_f.startswith(test_old_base):
-                    tail = norm_f[len(norm_old_base):]
-                    updated_path = norm_new_base + tail
-                    cursor.execute("UPDATE folders SET path = ? WHERE id = ?", (updated_path, row_id))
+                if norm_f.startswith(old_base):
+                    updated_f = new_base + norm_f[len(old_base):]
+                    folder_updates.append((updated_f, row_id))
                     
+            if folder_updates:
+                cursor.executemany("UPDATE OR REPLACE folders SET path = ? WHERE id = ?", folder_updates)
+                
+            # 2. Gather Tag Updates (Lightning fast batch, REPLACE overwrites crawler collisions)
             cursor.execute("SELECT id, image_path FROM tags")
+            tag_updates = []
             for row_id, img_path in cursor.fetchall():
                 norm_img = os.path.normpath(img_path)
-                test_img = norm_img.lower() if is_windows else norm_img
-                if test_img.startswith(test_old_base):
-                    tail = norm_img[len(norm_old_base):]
-                    updated_img = norm_new_base + tail
-                    cursor.execute("UPDATE tags SET image_path = ? WHERE id = ?", (updated_img, row_id))
+                if norm_img.startswith(old_base):
+                    updated_img = new_base + norm_img[len(old_base):]
+                    tag_updates.append((updated_img, row_id))
                     
+            if tag_updates:
+                cursor.executemany("UPDATE OR REPLACE tags SET image_path = ? WHERE id = ?", tag_updates)
+                
             self.conn.commit()
         except Exception as e:
             self.conn.rollback()
             print(f"Failed to rename folder safely in DB: {e}")
+            #raise the error so window.py knows it failed!
+            raise e
 
    
     def update_image_tags(self, image_path, new_tags_list, is_manual=True):
