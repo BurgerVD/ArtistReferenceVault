@@ -248,7 +248,7 @@ class ReferenceVault(QMainWindow):
         
         
         #update checker
-        self.CURRENT_VERSION = "v2.0.1" 
+        self.CURRENT_VERSION = "v2.0.2" 
         
         self.update_checker = UpdateCheckerThread(self.CURRENT_VERSION)
         self.update_checker.update_available.connect(self.show_update_dialog)
