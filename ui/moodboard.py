@@ -12,8 +12,7 @@ class MovableImage(QGraphicsPixmapItem):
         pixmap = QPixmap(image_path)
         
         if not pixmap.isNull():
-            if pixmap.width() > 2000 or pixmap.height() > 2000:
-                pixmap = pixmap.scaled(2000, 2000, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            #load hires image
             self.setPixmap(pixmap)
             
         self.setFlag(QGraphicsPixmapItem.GraphicsItemFlag.ItemIsMovable)
@@ -28,12 +27,17 @@ class MovableImage(QGraphicsPixmapItem):
 
     def get_handles(self):
         rect = self.boundingRect()
-        tx = self.transform()
-        #increased base size for easier grabbing
-        s = max(24.0, 32.0 / max(tx.m11(), tx.m22(), 0.01))
+        
+        #Get the current camera zoom from the view
+        zoom = 1.0
+        scene = self.scene()
+        if scene and scene.views():
+            zoom = scene.views()[0].transform().m11()
+            
+        #Keep handles exactly 16 pixels on screen
+        s = 16.0 / max(zoom, 0.001)
         half = s / 2.0
         
-        #Centering the hitboxes perfectly over the edges/corners
         return {
             'tl': QRectF(rect.left() - half, rect.top() - half, s, s),
             't':  QRectF(rect.center().x() - half, rect.top() - half, s, s),
@@ -53,9 +57,15 @@ class MovableImage(QGraphicsPixmapItem):
         super().paint(painter, option, widget)
         
         if self.isSelected():
-            tx = self.transform()
-            s = max(1.0, 2.0 / max(tx.m11(), tx.m22(), 0.01))
-            painter.setPen(QPen(QColor("#3498db"), s))
+            #Get camera zoom for the border thickness
+            zoom = 1.0
+            scene = self.scene()
+            if scene and scene.views():
+                zoom = scene.views()[0].transform().m11()
+                
+            #Keep border exactly 2 pixels thick on screen
+            pen_width = max(1.0, 2.0 / max(zoom, 0.001))
+            painter.setPen(QPen(QColor("#3498db"), pen_width))
             painter.drawRect(self.boundingRect())
             
             painter.setBrush(QColor("#3498db"))
@@ -101,27 +111,28 @@ class MovableImage(QGraphicsPixmapItem):
             delta = event.scenePos() - self._start_pos
             rect = self._start_rect
             
-            sx = self._start_transform.m11()
-            sy = self._start_transform.m22()
+            #Use X scale as baseline for proportional scaling
+            current_scale = self._start_transform.m11()
             
             dx = delta.x() / rect.width()
             dy = delta.y() / rect.height()
 
-            # Proportional corners
-            if self._resize_mode in ['tl', 'tr', 'bl', 'br']:
-                scale_factor = max(dx, dy) if self._resize_mode == 'br' else min(dx, dy)
-                sx = max(0.05, sx + dx)
-                sy = max(0.05, sy + dy)
-                # Force proportional
-                avg_scale = (sx + sy) / 2
-                sx, sy = avg_scale, avg_scale
-            # Edge stretches (Non-uniform)
-            elif self._resize_mode in ['l', 'r']:
-                sx = max(0.05, sx + dx)
-            elif self._resize_mode in ['t', 'b']:
-                sy = max(0.05, sy + dy)
+            #Determine scale addition based on which handle was grabbed
+            if self._resize_mode in ['r', 'br', 'tr']:
+                scale_add = dx
+            elif self._resize_mode in ['l', 'bl', 'tl']:
+                scale_add = -dx
+            elif self._resize_mode == 'b':
+                scale_add = dy
+            elif self._resize_mode == 't':
+                scale_add = -dy
+            else:
+                scale_add = 0
 
-            self.setTransform(QTransform.fromScale(sx, sy))
+            #Force proportional scaling (Aspect Ratio Aware) on BOTH axes
+            new_scale = max(0.05, current_scale + scale_add)
+            self.setTransform(QTransform.fromScale(new_scale, new_scale))
+            
             event.accept()
             return
         super().mouseMoveEvent(event)
@@ -406,7 +417,9 @@ class PureRefOverlay(QWidget):
         h_layout.addWidget(close_btn)
         
         self.board = InfiniteBoard(safe_parent=self)
-        self.main_layout.addWidget(self.header)
+        self.header.setParent(self) 
+        self.header.raise_() #Make header show on top to prevent jumping
+        
         self.main_layout.addWidget(self.board)
         self.resize(800, 600)
         
@@ -420,6 +433,14 @@ class PureRefOverlay(QWidget):
         self.header.hide()
         
     # --- Header Actions ---
+    
+    def resizeEvent(self, event): #type:ignore
+        super().resizeEvent(event)
+        #Force the floating header to always span the top edge perfectly
+        if hasattr(self, 'header'):
+            self.header.setGeometry(0, 0, self.width(), 30)
+            self.header.raise_() #Keeps it on top during window resizes
+    
     
     #Maximize window
     def toggle_maximize(self):
@@ -443,6 +464,7 @@ class PureRefOverlay(QWidget):
         if event is None: return
         if not self.is_locked:
             self.header.show()
+            self.header.raise_() #Forces header to render on top of the canvas
         super().enterEvent(event)
 
     def leaveEvent(self, event): # type: ignore
