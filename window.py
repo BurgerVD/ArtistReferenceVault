@@ -507,13 +507,11 @@ class ReferenceVault(QMainWindow):
             self.search_bar.setPlaceholderText("Search for images here (e.g. 'girl','sword')...")
             self.update_search_autocomplete()
             
-        # 2. Trigger background crawler after 4 seconds (Prevent HDD thrashing on boot)
-        saved_folders = self.db.get_folders()
-        folder_paths = [path for name, path in saved_folders] 
-        if folder_paths:
-            QTimer.singleShot(4000, lambda: self.start_crawler(folder_paths))
+      
+        #2. Flag for the background crawler
+        self.has_synced = False
 
-        # 3. Restore Last opened Folder (Instant)
+        #3. Restore Last opened Folder
         last_folder = self.settings.get("last_folder")
         if last_folder and os.path.exists(last_folder):
             iterator = QTreeWidgetItemIterator(self.folder_list)
@@ -525,6 +523,23 @@ class ReferenceVault(QMainWindow):
                     self.on_sidebar_folder_clicked(tree_item)
                     break
                 iterator += 1
+    
+    def showEvent(self, event): #type: ignore
+        super().showEvent(event)
+        
+        # want this to fire the first time the app opens,
+        # not every time the window is minimized/restored
+        if not self.has_synced:
+            self.has_synced = True
+            
+            # The window is now 100% visible on screen.
+            # Give the HDD exactly 1 second to catch its breath, then start scanning safely.
+            saved_folders = self.db.get_folders()
+            folder_paths = [path for name, path in saved_folders] 
+            
+            if folder_paths:
+                QTimer.singleShot(1000, lambda: self.start_crawler(folder_paths))
+    
             
     def toggle_moodboard(self):
         if self.moodboard.isVisible():
@@ -1110,8 +1125,8 @@ class ReferenceVault(QMainWindow):
         QMessageBox.information(
             self,
             "Vault Controls & Help",
-            "Welcome to Reference Vault v2!\n\n"
-            "🔍 SEARCH ENGINE & AI:\n"
+            "Welcome to Reference Vault!\n\n"
+            "🔍 SEARCH ENGINE:\n"
             "• Use '+' or '-' to include/exclude tags (e.g., 'sword -blood').\n"
             "• Auto-Tagger queues images in the background. Use the top-left buttons to Pause/Clear the queue.\n\n"
             "📂 LIBRARY MANAGEMENT:\n"
